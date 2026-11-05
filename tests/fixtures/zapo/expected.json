@@ -1,0 +1,44 @@
+{
+  "session": "bot",
+  "me": "5215511111111:7@s.whatsapp.net",
+  "lid": "111111111111111:7@lid",
+  "self": "5215511111111.7",
+  "bob": "5215522222222.0",
+  "carol": "333333333333333_1.3",
+  "group": "120363000000000001@g.us",
+  "groupSender": "5215522222222.0",
+  "registrationId": 13777,
+  "preKeys": 5,
+  "pending": [
+    {
+      "from": "bob",
+      "type": "msg",
+      "body": "330a21056f6d7c1575f24b63da0c6f70c14d71254e56e11ec22bb234fca405999c88ee6c100118002230bb76d3343cd46719f2402446fd75ab1dfb7916ecdeca237806d062d0482e581a49c52b2aedf429ce183a671381858000e6bfa11c833adc41",
+      "text": "pendiente: llegó fuera de orden"
+    },
+    {
+      "from": "bob",
+      "type": "msg",
+      "body": "330a21056f6d7c1575f24b63da0c6f70c14d71254e56e11ec22bb234fca405999c88ee6c100318002230e9d13715c026e84f8bd07accc44dea99bf18074e574516eec5310332796f0913ba6a576fb84e8570236d2fdf1c8286a9338d234c8b5fb53c",
+      "text": "pendiente: siguiente de la cadena"
+    },
+    {
+      "from": "carol",
+      "type": "pkmsg",
+      "body": "330802122105aa6ab6484c3e985f053040e726e3996859c554ce3e66f9499fcdf6df3f6e22091a2105b0cbcd7c385b22e41ae7abc3a26213871eccf7bc9a1c230287879a68261de2622252330a210531c6ced3e88cad1086be0d1b31a0ae2c3aa8445d5909bbf2b848d56fbdd4d16f100018002220aecd4b1efc54c63caeb1c0505fb711f758a19b7286f0a0f0f5b164352afeeae87251268930cf050c28f51c3001",
+      "text": "hola desde una cuenta lid"
+    }
+  ],
+  "groupPending": {
+    "body": "3308ecbfdac20310011a20fc0f2267f0baef3fb265e2dccef0a921668c6d6c6b486a827b8d89eee69df4a06f48cd7b9a605f6f7b9951280f97b27ff489c29ada07c9d01db78cffe9749c7bf977d06941bccbcb83ab0c6c481aac2da6c5f0bd4e8ba2060e795286d0fa618c",
+    "text": "grupo: pendiente de bob"
+  },
+  "appStateKeyId": "x6sPKqvW",
+  "appStateKey": "4ed84f493ad9f0d3c3a1ce76481c32a39ecc14836e3d41cf02d6528c6a5f4523",
+  "appStateVersion": 7,
+  "indexMac": "1a3022838949de9c011feeb5e058dfdbc7ca4d6f6e380447215f01c34429895a",
+  "lidPair": {
+    "pn": "5215533333333",
+    "lid": "333333333333333"
+  }
+}

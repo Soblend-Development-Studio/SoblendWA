@@ -1,0 +1,233 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  versions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Every manifest and the tag carry the same version
+        run: |
+          expected=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          for file in bindings/bridge/Cargo.toml bindings/node/Cargo.toml bindings/python/Cargo.toml bindings/server/Cargo.toml bindings/python/pyproject.toml; do
+            found=$(grep -m1 '^version' "$file" | cut -d'"' -f2)
+            if [ "$found" != "$expected" ]; then
+              echo "$file has $found, expected $expected"
+              exit 1
+            fi
+          done
+          for file in bindings/node/package.json clients/js/package.json; do
+            found=$(node -p "require('./$file').version")
+            if [ "$found" != "$expected" ]; then
+              echo "$file has $found, expected $expected"
+              exit 1
+            fi
+          done
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "v$expected" ]; then
+            echo "tag $GITHUB_REF_NAME does not match version $expected"
+            exit 1
+          fi
+
+  server:
+    name: server ${{ matrix.target }}
+    needs: versions
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-musl, archive: tar.gz }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, archive: tar.gz }
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, archive: tar.gz }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, archive: zip }
+          - { os: macos-15, target: aarch64-apple-darwin, archive: tar.gz }
+          - { os: macos-15-intel, target: x86_64-apple-darwin, archive: tar.gz }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release -p soblendwa-server --target ${{ matrix.target }}
+      - if: matrix.archive == 'tar.gz'
+        run: |
+          mkdir dist
+          tar -czf dist/soblendwa-server-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release soblendwa-server
+      - if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Compress-Archive target/${{ matrix.target }}/release/soblendwa-server.exe dist/soblendwa-server-${{ matrix.target }}.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: server-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  node:
+    name: node ${{ matrix.target }}
+    needs: versions
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: macos-15, target: aarch64-apple-darwin }
+          - { os: macos-15-intel, target: x86_64-apple-darwin }
+    defaults:
+      run:
+        working-directory: bindings/node
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: node-${{ matrix.target }}
+      - run: npm install
+      - run: npm run build -- --target ${{ matrix.target }}
+      - run: node -e "require('./index.js')"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: node-${{ matrix.target }}
+          path: bindings/node/*.node
+          if-no-files-found: error
+
+  python:
+    name: python ${{ matrix.os }} ${{ matrix.target }}
+    needs: versions
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: x86_64 }
+          - { os: ubuntu-22.04, target: aarch64 }
+          - { os: windows-latest, target: x64 }
+          - { os: macos-15, target: aarch64 }
+          - { os: macos-15-intel, target: x86_64 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: bindings/python
+          target: ${{ matrix.target }}
+          command: build
+          args: --release --out dist
+          manylinux: "2_28"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: python-${{ matrix.os }}-${{ matrix.target }}
+          path: bindings/python/dist/*.whl
+          if-no-files-found: error
+
+  github-release:
+    needs: [server, node, python]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: server-*
+          path: artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: python-*
+          path: artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: node-*
+          path: bindings/node
+          merge-multiple: true
+      - run: npm pack --pack-destination ../../artifacts
+        working-directory: bindings/node
+      - run: npm pack --pack-destination ../../artifacts
+        working-directory: clients/js
+      - run: sha256sum * > SHA256SUMS
+        working-directory: artifacts
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: artifacts/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+
+  publish-crate:
+    needs: github-release
+    if: github.ref_type == 'tag' && vars.PUBLISH_PACKAGES == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo publish -p soblendwa
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  publish-npm:
+    needs: github-release
+    if: github.ref_type == 'tag' && vars.PUBLISH_PACKAGES == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: node-*
+          path: bindings/node
+          merge-multiple: true
+      - run: npm publish
+        working-directory: bindings/node
+      - run: npm publish
+        working-directory: clients/js
+
+  publish-pypi:
+    needs: github-release
+    if: github.ref_type == 'tag' && vars.PUBLISH_PACKAGES == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: python-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1

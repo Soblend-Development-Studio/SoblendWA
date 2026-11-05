@@ -1,0 +1,35 @@
+{
+  "name": "soblendwa-client",
+  "version": "0.1.0",
+  "description": "JavaScript and TypeScript client for the SoblendWA server: WhatsApp bots in any runtime, powered by Rust. By Soblend Development Studio.",
+  "author": "Soblend Development Studio",
+  "license": "MIT",
+  "homepage": "https://github.com/Soblend-Development-Studio/SoblendWA/tree/main/clients/js#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Soblend-Development-Studio/SoblendWA.git",
+    "directory": "clients/js"
+  },
+  "bugs": { "url": "https://github.com/Soblend-Development-Studio/SoblendWA/issues" },
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": ["index.js", "index.d.ts", "README.md"],
+  "engines": { "node": ">=18" },
+  "keywords": ["whatsapp", "baileys", "bot", "websocket", "typescript", "rust"],
+  "peerDependencies": {
+    "ws": ">=8"
+  },
+  "peerDependenciesMeta": {
+    "ws": { "optional": true }
+  },
+  "scripts": {
+    "test": "node test.mjs"
+  }
+}

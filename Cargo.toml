@@ -1,0 +1,82 @@
+[package]
+name = "soblendwa"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+authors = ["Soblend Development Studio"]
+description = "SoblendWA: a blazing fast WhatsApp Web multi-device client library written in Rust. Crafted by Soblend Development Studio."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/Soblend-Development-Studio/SoblendWA"
+homepage = "https://github.com/Soblend-Development-Studio/SoblendWA"
+documentation = "https://docs.rs/soblendwa"
+keywords = ["whatsapp", "baileys", "bot", "signal", "multi-device"]
+categories = ["api-bindings", "network-programming", "asynchronous"]
+include = ["/src/**/*", "/examples/**/*", "/tests/fixtures/**/*", "/README.md", "/LICENSE"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+aes = "0.8"
+aes-gcm = "0.10"
+async-trait = "0.1"
+base64 = "0.22"
+bytes = "1"
+cbc = { version = "0.1", features = ["alloc"] }
+ctr = "0.9"
+curve25519-dalek = { version = "4.1", features = ["digest"] }
+dashmap = "6"
+flate2 = "1"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+hex = "0.4"
+hkdf = "0.12"
+hmac = "0.12"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+md-5 = "0.10"
+mongodb = { version = "3", optional = true }
+parking_lot = "0.12"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+prost = "0.13"
+rand = "0.8"
+redis = { version = "1.8", default-features = false, features = ["tokio-comp", "connection-manager"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "socks", "stream"] }
+rusqlite = { version = "0.41", features = ["bundled"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "net"] }
+tokio-postgres = { version = "0.7", optional = true }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+tracing = "0.1"
+url = "2"
+webpki-roots = "1"
+
+[workspace]
+members = ["bindings/bridge", "bindings/node", "bindings/python", "bindings/server"]
+
+[features]
+default = []
+sqlite = ["dep:rusqlite"]
+postgres = ["dep:tokio-postgres"]
+redis = ["dep:redis"]
+mongo = ["dep:mongodb"]
+stores = ["sqlite", "postgres", "redis", "mongo"]
+testing = []
+
+[[example]]
+name = "import_zapo"
+required-features = ["sqlite"]
+
+[dev-dependencies]
+qrcode = { version = "0.14", default-features = false }
+tokio = { version = "1", features = ["full"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"

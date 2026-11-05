@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "soblendwa"
+version = "0.1.0"
+description = "SoblendWA for Python: the Rust WhatsApp Web multi-device engine by Soblend Development Studio."
+readme = "README.md"
+authors = [{ name = "Soblend Development Studio" }]
+license = { text = "MIT" }
+requires-python = ">=3.9"
+keywords = ["whatsapp", "baileys", "bot", "rust", "multi-device"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Framework :: AsyncIO",
+    "License :: OSI Approved :: MIT License",
+]
+
+[project.urls]
+Homepage = "https://github.com/Soblend-Development-Studio/SoblendWA"
+Repository = "https://github.com/Soblend-Development-Studio/SoblendWA"
+Issues = "https://github.com/Soblend-Development-Studio/SoblendWA/issues"
+
+[tool.maturin]
+python-source = "python"
+module-name = "soblendwa._native"
+features = ["extension-module"]

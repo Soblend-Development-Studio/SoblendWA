@@ -1,0 +1,23 @@
+{
+  "bob": "5215522222222.0",
+  "group": "120363000000000001@g.us",
+  "groupSender": "5215522222222.0",
+  "pending": [
+    {
+      "type": "msg",
+      "body": "330a2105c8feebfb693c30d8f5c98107edb448ae82bdfb1332598d317ec6927eaa0e734b10011800222058cbbbd8d1000686b8746ca0c829a177b07bcbf5ae7f54aee7c5afdd850421df9e0fcd8cc9edb423",
+      "text": "b2 llega despues de importar"
+    },
+    {
+      "type": "msg",
+      "body": "330a21056dc35d3a39f62e71f6faf429fac3dea1c58675d040ff42f8258b8de18ba30e3b1000180222204032145043e4bfb2d6d60308455d41f9a4083915966a0cc1f920dae379c6da902c12e5867730a708",
+      "text": "b4 tras un paso del ratchet"
+    }
+  ],
+  "groupMessage": {
+    "body": "3308b53910071a205391fb4a3b79c5b7cc246ebddeaf009d8b8c065121c94a699a89c8e19cb17479c86bc8fb8fe3e65f3a21af3b8a11feddb336fde55280cde59c5677e7d6a121283459be73cb4b10852c922ea86560f8b5bbccff7821aa93ff6a5258501a110d09",
+    "text": "hola grupo desde baileys"
+  },
+  "appStateKeyId": "AAAAAJTk",
+  "appStateKey": "76d43cb7e98132f1aace7b7f98f85df407a1b5e7cf9e36e3a374d0e9b773c52d"
+}

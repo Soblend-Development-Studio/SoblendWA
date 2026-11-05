@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --features "sqlite mongo testing" -- -D warnings
+      - run: cargo test --features "sqlite mongo testing" --lib
+      - run: cargo test --doc
+      - run: cargo test -p soblendwa-server
+
+  minimum-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.89
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p soblendwa --features stores
+
+  fake-whatsapp-from-js:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: cargo build --release -p soblendwa-server
+      - run: |
+          ./target/release/soblendwa-server --fake --port 8787 --session bot --session ana &
+          sleep 5
+          node clients/js/soak.mjs --sessions bot,ana --hours 0.01 --interval 2 --media-every 3 --pid $! --out soak.jsonl
+      - uses: actions/upload-artifact@v7
+        with:
+          name: soak-report
+          path: soak.jsonl
