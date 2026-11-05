@@ -8,6 +8,6 @@ const missing = files.filter((file) => file.endsWith('.node') && !existsSync(joi
 
 if (missing.length > 0) {
   console.error(`Refusing to publish without the native builds: ${missing.join(', ')}`)
-  console.error('Publish the soblendwa-<version>.tgz attached to the GitHub release instead.')
+  console.error('Publish the soblendwa-node-<version>.tgz attached to the GitHub release instead.')
   process.exit(1)
 }

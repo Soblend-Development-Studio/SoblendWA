@@ -78,7 +78,7 @@ await bot.sendText(chat, texto, { preview: { title: 'Mi título', description: '
 
 ## Métodos
 
-Los mismos que el módulo nativo `soblendwa`: `sendText`, `reply`, `react`, `read`, `sendImage`, `sendVideo`,
+Los mismos que el módulo nativo `soblendwa-node`: `sendText`, `reply`, `react`, `read`, `sendImage`, `sendVideo`,
 `sendAudio`, `sendDocument`, `sendSticker`, `sendFile`, `download`, `downloadToFile`, `sendPoll`, `votePoll`, `edit`,
 `revoke`, `typing`, `setOnline`, `sendInteractive`, `sendButtons`, `sendList`, `sendContacts`, `sendMentionAll`,
 `sendGroupInvite`, `setMemberLabel`, `sendProto`, `groupInfo`, `joinedGroups`, `onWhatsApp`, `profilePicture`, `block`,

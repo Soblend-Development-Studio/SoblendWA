@@ -1,5 +1,5 @@
 {
-  "name": "soblendwa",
+  "name": "soblendwa-node",
   "version": "0.1.0",
   "description": "SoblendWA for Node.js: the Rust WhatsApp Web multi-device engine by Soblend Development Studio.",
   "author": "Soblend Development Studio",

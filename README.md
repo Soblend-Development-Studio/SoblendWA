@@ -16,7 +16,7 @@
   <a href="https://github.com/Soblend-Development-Studio/SoblendWA/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Soblend-Development-Studio/SoblendWA/ci.yml?branch=main&label=CI"></a>
   <a href="https://crates.io/crates/soblendwa"><img alt="crates.io" src="https://img.shields.io/crates/v/soblendwa?color=e6732e"></a>
   <a href="https://docs.rs/soblendwa"><img alt="docs.rs" src="https://img.shields.io/docsrs/soblendwa"></a>
-  <a href="https://www.npmjs.com/package/soblendwa"><img alt="npm" src="https://img.shields.io/npm/v/soblendwa?color=cb3837"></a>
+  <a href="https://www.npmjs.com/package/soblendwa-node"><img alt="npm" src="https://img.shields.io/npm/v/soblendwa-node?color=cb3837"></a>
   <a href="https://pypi.org/project/soblendwa/"><img alt="PyPI" src="https://img.shields.io/pypi/v/soblendwa?color=3775a9"></a>
   <img alt="Rust 1.89 o más reciente" src="https://img.shields.io/badge/rust-1.89%2B-e6732e">
   <img alt="Sin código inseguro" src="https://img.shields.io/badge/unsafe-prohibido-2ea44f">
@@ -64,7 +64,7 @@ pero compilada a código nativo: sin recolector de basura, sin pausas y con un c
 | Si tu bot está en… | Instala | Sigue en |
 |---|---|---|
 | Rust | `cargo add soblendwa` | [Rust](#rust) |
-| Node.js o TypeScript, en el mismo proceso | `npm install soblendwa` | [Node.js](#nodejs-y-typescript) |
+| Node.js o TypeScript, en el mismo proceso | `npm install soblendwa-node` | [Node.js](#nodejs-y-typescript) |
 | Python (asyncio) | `pip install soblendwa` | [Python](#python) |
 | JavaScript o TypeScript sin módulos nativos (Node, Bun, Deno, navegador) | `npm install soblendwa-client` y `soblendwa-server` | [Sin compilar nada](#sin-compilar-nada) |
 | Cualquier otro lenguaje (Go, PHP, Java, C#…) o en otra máquina | `soblendwa-server` | [Servidor](#servidor-cualquier-lenguaje) |
@@ -74,7 +74,7 @@ Todas las opciones usan el mismo motor en Rust y tienen las mismas funciones pri
 | Paquete | Dónde funciona |
 |---|---|
 | `soblendwa` en crates.io | Rust 1.89 o más reciente |
-| `soblendwa` en npm | Node.js 18 o más reciente en Windows x64, macOS (Intel y ARM) y Linux x64 o ARM64 con glibc 2.35 o más reciente (Ubuntu 22.04, Debian 12). Trae los binarios de las cinco plataformas, así que la descarga ronda los 40 MB. En Alpine usa el servidor |
+| `soblendwa-node` en npm | Node.js 18 o más reciente en Windows x64, macOS (Intel y ARM) y Linux x64 o ARM64 con glibc 2.35 o más reciente (Ubuntu 22.04, Debian 12). Trae los binarios de las cinco plataformas, así que la descarga ronda los 40 MB. En Alpine usa el servidor |
 | `soblendwa` en PyPI | Python 3.9 o más reciente en Windows x64, macOS (Intel y ARM) y Linux x64 o ARM64 (manylinux 2.28) |
 | `soblendwa-client` en npm | Node.js 18 o más reciente, Bun, Deno y el navegador. Sin dependencias |
 | `soblendwa-server` | Binarios listos para Linux x64 y ARM64 (estáticos), Windows x64 y macOS (Intel y ARM) |
@@ -140,7 +140,7 @@ async fn main() -> soblendwa::Result<()> {
 ### Node.js y TypeScript
 
 ```js
-const { SoblendWA } = require('soblendwa')
+const { SoblendWA } = require('soblendwa-node')
 
 async function main() {
   const bot = await SoblendWA.create({ store: { type: 'sqlite', path: 'session/auth.db' } })

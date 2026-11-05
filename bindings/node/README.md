@@ -10,7 +10,7 @@ llama métodos, así que el bot no se frena por el recolector de basura ni por e
 ## Instalar
 
 ```bash
-npm install soblendwa
+npm install soblendwa-node
 ```
 
 Funciona con Node.js 18 o más reciente en Windows x64, macOS (Intel y ARM) y Linux x64 o ARM64 con glibc 2.35 o más
@@ -34,7 +34,7 @@ npm test
 
 ```js
 const fs = require('node:fs')
-const { SoblendWA } = require('soblendwa')
+const { SoblendWA } = require('soblendwa-node')
 
 async function main() {
   const bot = await SoblendWA.create({
@@ -59,7 +59,7 @@ main()
 Para migrar un bot de Baileys sin volver a escanear el QR:
 
 ```js
-const { importBaileys } = require('soblendwa')
+const { importBaileys } = require('soblendwa-node')
 const report = await importBaileys('./auth_info', { type: 'sqlite', path: 'session/auth.db' })
 ```
 
