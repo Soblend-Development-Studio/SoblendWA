@@ -26,6 +26,10 @@ arregla. Para no llevarte sorpresas fija la versión exacta: `"soblendwa-node": 
 - Node: acciones de grupo, perfil, privacidad, `lidForPhone` / `phoneForLid`, menciones, miniatura propia como `Buffer`,
   `restart()`, `close()`, `waitFor()`, `call()`, `FakeWhatsApp`, `importZapo` / `rollbackZapo`.
 - Python, servidor y cliente JS al mismo nivel que Node.
+- Python: `FakeWhatsApp` y `wait_for()`, igual que en Node. `test_fake.py` corre en el CI junto con `test-fake.js`.
+- Servidor: `GET /metrics` en formato Prometheus, con la misma clave que lo demás.
+- `FakeWhatsApp::slow_uploads` / `slowUploads(ms)` para simular un CDN lento.
+- Rust: `send_prepared(chat, future)` es público.
 - `store-check.js` y `live-check.js` para probar tu base y un número de prueba;
   [guía](https://soblend-development-studio.github.io/SoblendWA/#probar-en-real).
 - `examples/soak.rs`: deja tu número conectado semanas y te contesta solo a ti con `!yowner`.
@@ -42,6 +46,11 @@ Medido en la misma máquina antes y después (`pipeline` y `throughput` en las p
 - Firma de grupo con la clave de Edwards cacheada: ~18% más en grupos.
 - mimalloc en Node, Python y el servidor.
 - Miniaturas: 93 ms → 41 ms para una foto de 1600×1200.
+- Varios archivos al mismo chat suben a la vez y se entregan en orden. Seis subidas de 150 ms: 1,08 s → 0,36 s
+  (`uploads_overlap_in_order`). Vale para Rust, Node, Python y el servidor.
+- Signal con un lock por contacto en vez de uno por cuenta (`signal::bench::contention`, release): 32 chats recién
+  reiniciados con un store de 5 ms por lectura, 490 ms → 7 ms; con todo en caché, 99 mil → 210 mil descifrados/s en
+  un hilo y 78 mil → 583 mil en cuatro. Los envíos a grupos también leen sus sesiones a la vez.
 - JIDs formateados sin `write!`.
 
 ### Arreglado
@@ -56,6 +65,11 @@ Medido en la misma máquina antes y después (`pipeline` y `throughput` en las p
 - Envíos al mismo chat sin `await` (o con `asyncio.gather`, o por WebSocket) podían salir desordenados: ~30 de 300.
   Ahora salen en el orden en que se llamaron.
 - `connect()` justo después de `disconnect()` se quedaba desconectado.
+- Un mensaje que esperaba su reintento se olvidaba al reiniciar: no llegaba ni `messageLost` ni `messageRecovered`, y
+  `stats().lost` se quedaba corto. Ahora la espera se guarda en el store (`awaiting-retry`).
+- Python: si salías de `events()` a la mitad de un lote, el resto del lote se perdía.
+- Dos hilos podían guardar la misma sesión Signal en orden invertido y dejar un ratchet viejo en el store. La ventana
+  era de nanosegundos y nunca se vio, pero ahora cada sesión se guarda antes de soltar su lock.
 - Node: un listener que tiraba excepción cortaba los eventos, y una promesa rechazada podía tumbar el proceso.
 - Python: una excepción en un handler paraba `run()`.
 

@@ -231,7 +231,9 @@ Esta parte es la que más nos importaba. Cosas que pasan solas:
 - `stats().sendTimings` da p50, p95 y máximo de cada fase del envío con tu red: cola del chat, subida, preparación,
   cifrado y respuesta del servidor.
 - Lo que mandas al mismo chat sale en el orden en que lo llamaste, aunque no esperes cada envío. Chats distintos van
-  en paralelo.
+  en paralelo, y los archivos suben a la vez aunque vayan al mismo chat: solo la entrega espera turno.
+- Si el bot se reinicia mientras espera el reintento de un mensaje que no pudo descifrar, la espera sigue donde estaba
+  (se guarda en el store) y `messageLost` / `messageRecovered` llegan igual.
 - Hay un límite de envíos por defecto (240 por minuto, 40 por chat) para que un bucle no termine en spam; se ajusta
   o se apaga con `sendLimit`. La reconexión espera cada vez más, con algo de azar para que cien sesiones no reconecten
   en el mismo milisegundo.
@@ -264,7 +266,8 @@ curl -X POST http://127.0.0.1:8787/api/ventas/sendText \
   -d '{"chat":"5215512345678","text":"Hola desde curl"}'
 ```
 
-`GET /` lista los métodos. El cliente de JS/TS está en
+`GET /` lista los métodos y `GET /metrics` da las métricas de todas las cuentas para Prometheus. El cliente de JS/TS
+está en
 [`clients/js`](https://github.com/Soblend-Development-Studio/SoblendWA/tree/main/clients/js) y funciona en Node, Bun,
 Deno y el navegador.
 
@@ -371,10 +374,12 @@ solo tienes un número, `examples/soak.rs` se queda conectado con el tuyo y solo
 cargo test --workspace
 cargo test --features "sqlite mongo testing" --lib
 node bindings/node/test-fake.js
+python bindings/python/test_fake.py
 ```
 
-`test-fake.js` levanta el WhatsApp falso desde Node y prueba citas, menciones, miniaturas propias, grupos, errores,
-reinicios, multimedia compartida y el orden de una ráfaga. En tus propias pruebas lo usas igual:
+`test-fake.js` y `test_fake.py` levantan el WhatsApp falso desde Node y Python y prueban citas, menciones, miniaturas
+propias, grupos, errores, reinicios, multimedia compartida, subidas lentas y el orden de una ráfaga. En tus propias
+pruebas lo usas igual:
 
 ```js
 const { FakeWhatsApp } = require('soblendwa-node')
@@ -384,6 +389,8 @@ const bot = await fake.connect('5215511111111')
 const ana = await fake.connect('5215522222222')
 await ana.sendText('5215511111111', '!ping')
 ```
+
+En Python es `from soblendwa import FakeWhatsApp` con los mismos métodos en snake_case, y `bot.wait_for("message")`.
 
 El decodificador binario se prueba con cientos de miles de entradas aleatorias y mutadas, y ninguna lo hace entrar en
 pánico. El CI corre formato, clippy y todo lo anterior en Linux, Windows y macOS, y también contra MongoDB, PostgreSQL
