@@ -7,6 +7,8 @@ use super::{double_token, single_token, tag, Content, Node, Str, Value};
 use crate::error::{Error, Result};
 use crate::jid::Jid;
 
+// Both limits came out of the fuzz tests: deep enough nesting overflowed the stack, and a small
+// compressed frame could inflate to gigabytes. Real stanzas are nowhere near either.
 const MAX_DEPTH: usize = 64;
 const MAX_INFLATED: u64 = 32 * 1024 * 1024;
 

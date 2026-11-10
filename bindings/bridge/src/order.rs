@@ -95,6 +95,8 @@ impl Drop for Turn {
             }
             (line.bells.get(&line.serving).cloned(), line.serving == line.issued)
         };
+        // wake only the next turn. The first version used notify_waiters() and 10k queued sends to one
+        // chat turned into 100M wakeups (545 msg/s).
         if let Some(bell) = next {
             bell.notify_one();
         }

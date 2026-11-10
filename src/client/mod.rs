@@ -66,6 +66,7 @@ use crate::proto;
 use crate::signal::SignalRepository;
 use crate::store::{Creds, MemoryStore, Store};
 
+// Only used when fetching the current WhatsApp Web version fails; the real one is looked up and cached.
 pub const DEFAULT_VERSION: [u32; 3] = [2, 3000, 1052682108];
 const WS_URL: &str = "wss://web.whatsapp.com/ws/chat";
 const SENT_CACHE_LIMIT: usize = 1024;
@@ -105,6 +106,8 @@ impl Platform {
         }
     }
 
+    // These are the pairing client types (same numbers whatsmeow uses), not DeviceProps.PlatformType.
+    // The two enums disagree past Chrome, e.g. Firefox is 3 here and 2 there.
     pub(crate) fn companion_id(self) -> u8 {
         match self {
             Platform::Chrome => 1,
@@ -531,6 +534,8 @@ pub(crate) struct Inner {
     issuing_tokens: DashSet<Jid>,
     media_retries: DashMap<String, oneshot::Sender<Node>>,
     fetch_locks: DashMap<Jid, Arc<tokio::sync::Mutex<()>>>,
+    // TODO: this only lives in memory, so a restart inside the retry window forgets what we were
+    // waiting for and those messages never count as recovered or lost. Store it like the outbox.
     awaiting_retry: DashMap<String, Awaiting>,
     lost: DashSet<String>,
     recent_joins: DashMap<Jid, Instant>,

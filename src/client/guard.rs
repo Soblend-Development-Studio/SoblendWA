@@ -149,6 +149,8 @@ pub struct Spread {
 }
 
 impl Spread {
+    // select_nth instead of sorting: dashboards call stats() a lot, and this used to sort six
+    // windows of 512 samples on every call.
     fn of(mut values: Vec<Duration>) -> Option<Spread> {
         let last = values.len().checked_sub(1)?;
         let max = values.iter().copied().max()?;

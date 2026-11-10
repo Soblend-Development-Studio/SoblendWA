@@ -149,6 +149,8 @@ impl Client {
     pub async fn send_message_with(&self, chat: &Jid, message: Message, options: SendOptions) -> Result<String> {
         let chat = chat.to_non_device();
         self.admit_send(&chat)?;
+        // deliver() is a big state machine (~25 KB). Boxing it keeps send_text and friends small, which
+        // matters when someone awaits them straight from main on Windows (1 MB of stack). See small_futures.
         self.send_in_lane(&chat, Box::pin(self.deliver(&chat, message, options, false))).await
     }
 

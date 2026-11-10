@@ -163,6 +163,8 @@ class SoblendWA extends EventEmitter {
   }
 
   deliver(type, event) {
+    // not emit(): it stops at the first listener that throws, and one broken command
+    // handler shouldn't silence the rest of the bot
     for (const listener of this.rawListeners(type)) {
       try {
         const result = listener.call(this, event)

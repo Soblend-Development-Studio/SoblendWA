@@ -656,6 +656,8 @@ impl Session {
         Some(text)
     }
 
+    // Everything that's already waiting goes out in one call as one JSON array. One promise per event
+    // was half of Node's time under load.
     pub async fn next_events_json(&self, max: usize) -> Option<String> {
         let mut stream = self.shared.events.lock().await;
         let first = stream.recv().await?;

@@ -17,6 +17,10 @@ const PAIRING_ROUNDS: u32 = 2 << 16;
 const FIRST_QR_TTL: Duration = Duration::from_secs(60);
 const NEXT_QR_TTL: Duration = Duration::from_secs(20);
 
+// The server checks this string. It has to look like "Chrome (Windows)", a browser and an OS it
+// knows; anything else, like our device name, gets a 400 bad-request back. whatsmeow documents the
+// same rule.
+// TODO: Desktop shows up as Chrome here for now, find out what the desktop app sends.
 fn pairing_display(platform: Platform) -> String {
     let browser = match platform {
         Platform::Desktop => "Chrome",

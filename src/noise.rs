@@ -8,14 +8,18 @@ use crate::proto::{CertChain, CertificateDetails, ServerHello};
 #[cfg(any(test, feature = "testing"))]
 use crate::proto::{ClientFinish, NoiseCertificate};
 
+// The name fits in 32 bytes, so per the Noise spec it is zero padded and used as the first hash as is.
 const NOISE_MODE: &[u8; 32] = b"Noise_XX_25519_AESGCM_SHA256\0\0\0\0";
+// "WA", then the header version and the version of the token dictionary the binary codec uses.
 pub(crate) const WA_HEADER: [u8; 4] = [b'W', b'A', 6, 3];
 pub(crate) const WA_ROOT_KEY: [u8; 32] = [
     0x14, 0x23, 0x75, 0x57, 0x4d, 0x0a, 0x58, 0x71, 0x66, 0xaa, 0xe7, 0x1e, 0xbe, 0x51, 0x64, 0x37, 0xc4, 0xa2, 0x8b,
     0x73, 0xe3, 0x69, 0x5c, 0x6c, 0xe1, 0xf7, 0xf9, 0x54, 0x5d, 0xa8, 0xee, 0x6b,
 ];
 const WA_ROOT_SERIAL: u32 = 0;
+// a day of slack on the certificate dates; plenty of cheap VPS clocks are off by hours
 const CERTIFICATE_SKEW_SECS: u64 = 24 * 60 * 60;
+// frames carry a 3 byte length
 pub(crate) const MAX_FRAME: usize = (1 << 24) - 1;
 
 pub(crate) fn intro_header(routing_info: Option<&[u8]>) -> Vec<u8> {

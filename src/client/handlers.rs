@@ -446,6 +446,8 @@ impl Client {
         let author = node.attr_jid("participant");
         let timestamp = node.attr_i64("t").unwrap_or_else(now_secs);
         for child in node.nodes() {
+            // add/remove/promote list participants right under the action, but `create` nests them
+            // inside <group>. Missing that is why "the bot joined" never fired for brand new groups.
             let listed = if child.tag.as_ref() == "create" { child.child("group").unwrap_or(child) } else { child };
             let participants: Vec<Jid> = listed.children_by("participant").filter_map(|p| p.attr_jid("jid")).collect();
             let action = match child.tag.as_ref() {

@@ -9,6 +9,7 @@ use crate::proto::{
 
 pub(crate) const VERSION_BYTE: u8 = 0x33;
 const MAC_LEN: usize = 8;
+// Same limits as libsignal, so a session that works there works here and the other way around.
 const MAX_PREVIOUS_SESSIONS: usize = 40;
 const MAX_RECEIVING_CHAINS: usize = 5;
 const MAX_SKIPPED_KEYS: usize = 2000;
@@ -811,6 +812,8 @@ fn state_to_proto(state: &SessionState) -> StoredSessionState {
 
 fn state_from_proto(stored: StoredSessionState) -> Result<SessionState> {
     let private = array32(&stored.our_ratchet_private)?;
+    // Sessions saved before 0.2 only kept the private half. Rebuilding the public one is a full curve
+    // multiplication (~40 µs), so only pay it for those.
     let our_ratchet = match stored.our_ratchet_public.as_slice().try_into() {
         Ok(public) => KeyPair { public, private },
         Err(_) => KeyPair::from_private(private),

@@ -9,6 +9,7 @@ use serde_json::Value;
 use soblendwa_bridge::{self as bridge, Session};
 
 #[global_allocator]
+// the system allocator on Windows (and musl's on Alpine) was the slowest part of handling a message
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn fail(err: impl bridge::Describe) -> Error {
@@ -24,6 +25,8 @@ where
     bridge::run(work(session.clone())).await.map_err(fail)
 }
 
+// napi runs the body of an `async fn` later, on the runtime, so two sends fired back to back from JS
+// could swap places. The turn has to be taken here, while we're still on the JS thread.
 fn ordered<'env, T, F, Fut>(
     env: &'env Env,
     session: &Session,

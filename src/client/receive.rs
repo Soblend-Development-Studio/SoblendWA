@@ -241,6 +241,7 @@ impl Client {
         if !info.from_me {
             self.learn_device(&info.sender).await;
         }
+        // what we send from the phone reaches our other devices wrapped in deviceSentMessage
         if let Some(sent) = message.device_sent_message.take() {
             if let Some(inner) = sent.message {
                 message = *inner;

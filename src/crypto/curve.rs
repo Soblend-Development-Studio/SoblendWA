@@ -57,6 +57,8 @@ pub fn sign(private: &[u8; 32], message: &[u8]) -> [u8; 64] {
     sign_with(private, &edwards_public(private), message)
 }
 
+// XEdDSA the way libsignal does it: instead of flipping the key to force a positive A, the sign bit
+// of A rides in the top bit of the signature, and verify() reads it back from there.
 pub fn sign_with(private: &[u8; 32], edwards: &[u8; 32], message: &[u8]) -> [u8; 64] {
     let nonce: [u8; 64] = super::random_array();
     let a = Scalar::from_bytes_mod_order(*private);

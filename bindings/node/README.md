@@ -77,8 +77,8 @@ Si prefieres no usar `on`, también puedes hacer `for await (const event of bot.
 { type: 'memory' }
 ```
 
-Con `account` varias cuentas comparten la misma base. Mongo funciona, pero todavía no lo hemos corrido contra un servidor
-real por semanas; si lo usas en producción, haz respaldo.
+Con `account` varias cuentas comparten la misma base. MongoDB, PostgreSQL y Redis pasan contra servidores reales en el
+CI, pero nadie los ha usado semanas en producción todavía; si los usas, haz respaldo.
 
 También puedes escribir el store tú con la base que quieras. Las lecturas ya pasan por caché y las escrituras llegan
 juntas, así que no tienes que optimizar nada:

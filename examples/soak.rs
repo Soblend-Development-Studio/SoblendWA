@@ -36,6 +36,7 @@ fn now_millis() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
 }
 
+// TODO: Windows. Only Linux has /proc, so on a PC this just shows "?".
 fn rss_mb() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;

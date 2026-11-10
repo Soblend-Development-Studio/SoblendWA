@@ -145,6 +145,7 @@ impl Client {
         let writer_close = close.clone();
         let writer_task = tokio::spawn(async move {
             while let Some(first) = outbound_rx.recv().await {
+                // take whatever else is already queued and flush once: one write instead of one per frame
                 let mut batch = vec![first];
                 while let Ok(next) = outbound_rx.try_recv() {
                     batch.push(next);

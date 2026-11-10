@@ -30,6 +30,8 @@ pub fn thumbnail(data: &[u8], width: u32) -> Result<Vec<u8>> {
     let (w, h) = image.dimensions();
     let target_w = width.min(w).max(1);
     let target_h = ((u64::from(h) * u64::from(target_w)) / u64::from(w.max(1))).max(1) as u32;
+    // thumbnail_exact samples instead of filtering every source pixel; for a phone photo going down
+    // to 32 px wide it's about twice as fast as resize_exact and looks the same at that size
     encode_jpeg(&image.thumbnail_exact(target_w, target_h), 50)
 }
 

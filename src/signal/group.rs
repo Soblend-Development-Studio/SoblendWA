@@ -5,6 +5,8 @@ use crate::crypto::{self, signal_key, strip_key_prefix, verify, KeyPair};
 use crate::error::{Error, Result};
 use crate::proto::{SenderKeyDistribution, SenderKeyMessage, StoredMessageKey, StoredSenderKey, StoredSenderKeyState};
 
+// libsignal's numbers again; older states stay around so messages sent right before a key rotation
+// still decrypt
 const MAX_STATES: usize = 5;
 const MAX_SKIPPED_KEYS: usize = 2000;
 const MAX_FORWARD_JUMP: u32 = 2000;
@@ -145,6 +147,8 @@ impl SenderKeyRecord {
         let mut out = Vec::with_capacity(1 + body.encoded_len() + SIGNATURE_LEN);
         out.push(VERSION_BYTE);
         body.encode(&mut out).expect("vec has capacity");
+        // the signature needs the Edwards form of the signing key; it never changes for this sender
+        // key, so work it out once instead of once per group message
         let edwards = *state.edwards.get_or_insert_with(|| crypto::edwards_public(&signing_private));
         let signature = crypto::sign_with(&signing_private, &edwards, &out);
         out.extend_from_slice(&signature);

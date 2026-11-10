@@ -12,6 +12,8 @@ use crate::store::KeyKind;
 const DEVICE_REFRESH_AFTER: i64 = 15 * 60;
 const ASK_AGAIN_AFTER: i64 = 5;
 
+// Everyone on WhatsApp has at least the phone, so an empty list means we asked at a bad moment
+// (warm-up racing a new contact, a hiccup on the server). Don't trust it for long.
 fn worth_asking_again(fetched_at: i64, devices: &[Jid]) -> bool {
     devices.is_empty() && now_secs() - fetched_at > ASK_AGAIN_AFTER
 }
@@ -235,6 +237,9 @@ impl Client {
         });
     }
 
+    // A message from a device that isn't in the cache means the cache is behind: someone opened
+    // WhatsApp Web and wrote before the devices notification got here. Without this, our replies
+    // skip that device until the 15 minute refresh.
     pub(crate) async fn learn_device(&self, device: &Jid) {
         let user = device.to_non_device();
         let outdated = match self.inner.devices.get(&user) {
