@@ -64,7 +64,7 @@ use crate::events::{DisconnectReason, Event, MessageInfo};
 use crate::jid::Jid;
 use crate::proto;
 use crate::signal::SignalRepository;
-use crate::store::{Creds, MemoryStore, Store};
+use crate::store::{Creds, KeyKind, MemoryStore, Store};
 
 // Only used when fetching the current WhatsApp Web version fails; the real one is looked up and cached.
 pub const DEFAULT_VERSION: [u32; 3] = [2, 3000, 1052682108];
@@ -79,6 +79,33 @@ pub(crate) struct Awaiting {
     sender: Jid,
     error: String,
     since: Instant,
+}
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
+fn encode_awaiting(awaiting: &Awaiting, since_unix_ms: u64) -> Vec<u8> {
+    serde_json::json!({
+        "chat": awaiting.chat.to_string(),
+        "sender": awaiting.sender.to_string(),
+        "error": awaiting.error,
+        "since": since_unix_ms,
+    })
+    .to_string()
+    .into_bytes()
+}
+
+fn decode_awaiting(raw: &[u8]) -> Option<(Awaiting, Duration)> {
+    let value: serde_json::Value = serde_json::from_slice(raw).ok()?;
+    let waited = Duration::from_millis(unix_millis().saturating_sub(value["since"].as_u64()?));
+    let awaiting = Awaiting {
+        chat: value["chat"].as_str()?.parse().ok()?,
+        sender: value["sender"].as_str()?.parse().ok()?,
+        error: value["error"].as_str().unwrap_or_default().to_owned(),
+        since: Instant::now().checked_sub(waited).unwrap_or_else(Instant::now),
+    };
+    Some((awaiting, waited))
 }
 const SEEN_MESSAGES: usize = 8192;
 
@@ -386,7 +413,9 @@ impl ClientBuilder {
         for rx in receivers {
             tokio::spawn(lane_worker(Arc::downgrade(&inner), rx));
         }
-        Ok((Client { inner }, stream))
+        let client = Client { inner };
+        client.restore_awaiting().await;
+        Ok((client, stream))
     }
 }
 
@@ -534,8 +563,6 @@ pub(crate) struct Inner {
     issuing_tokens: DashSet<Jid>,
     media_retries: DashMap<String, oneshot::Sender<Node>>,
     fetch_locks: DashMap<Jid, Arc<tokio::sync::Mutex<()>>>,
-    // TODO: this only lives in memory, so a restart inside the retry window forgets what we were
-    // waiting for and those messages never count as recovered or lost. Store it like the outbox.
     awaiting_retry: DashMap<String, Awaiting>,
     lost: DashSet<String>,
     recent_joins: DashMap<Jid, Instant>,
@@ -661,7 +688,7 @@ impl Client {
             Event::Message(message) => {
                 guard::Counters::bump(&self.inner.counters.received);
                 let id = &message.info.id;
-                let waiting = self.inner.awaiting_retry.remove(id).map(|(id, _)| id);
+                let waiting = self.forget_retry(id).map(|(id, _)| id);
                 let late = || {
                     let found = self.inner.lost.remove(id);
                     if found.is_some() {
@@ -691,7 +718,7 @@ impl Client {
         }
     }
 
-    pub(crate) fn await_retry(&self, info: &MessageInfo, error: &str) {
+    pub(crate) async fn await_retry(&self, info: &MessageInfo, error: &str) {
         if self.inner.awaiting_retry.contains_key(&info.id) {
             return;
         }
@@ -705,19 +732,52 @@ impl Client {
             error: error.to_owned(),
             since: Instant::now(),
         };
+        let saved = encode_awaiting(&awaiting, unix_millis());
+        if let Err(err) = self.inner.store.set(KeyKind::AwaitingRetry, &info.id, saved).await {
+            tracing::warn!(%err, "could not save a pending retry, it won't survive a restart");
+        }
         self.inner.awaiting_retry.insert(info.id.clone(), awaiting);
+        self.give_up_later(info.id.clone(), self.inner.config.retry_deadline);
+    }
+
+    fn give_up_later(&self, id: String, after: Duration) {
         let client = Arc::downgrade(&self.inner);
-        let id = info.id.clone();
-        let deadline = self.inner.config.retry_deadline;
         tokio::spawn(async move {
-            tokio::time::sleep(deadline).await;
+            tokio::time::sleep(after).await;
             let Some(inner) = client.upgrade() else { return };
             Client { inner }.give_up_on(&id);
         });
     }
 
+    fn forget_retry(&self, id: &str) -> Option<(String, Awaiting)> {
+        let found = self.inner.awaiting_retry.remove(id)?;
+        let store = self.inner.store.clone();
+        let key = found.0.clone();
+        tokio::spawn(async move {
+            let _ = store.remove(KeyKind::AwaitingRetry, &key).await;
+        });
+        Some(found)
+    }
+
+    // Anything still waiting from before a restart picks up where it was: past the deadline it counts
+    // as lost right away, otherwise it keeps waiting for the time it had left.
+    async fn restore_awaiting(&self) {
+        let store = &self.inner.store;
+        let Ok(ids) = store.keys(KeyKind::AwaitingRetry).await else { return };
+        let deadline = self.inner.config.retry_deadline;
+        for id in ids {
+            let saved = store.get(KeyKind::AwaitingRetry, &id).await.ok().flatten();
+            let Some((awaiting, waited)) = saved.as_deref().and_then(decode_awaiting) else {
+                let _ = store.remove(KeyKind::AwaitingRetry, &id).await;
+                continue;
+            };
+            self.inner.awaiting_retry.insert(id.clone(), awaiting);
+            self.give_up_later(id, deadline.saturating_sub(waited));
+        }
+    }
+
     fn give_up_on(&self, id: &str) {
-        let Some((id, awaiting)) = self.inner.awaiting_retry.remove(id) else { return };
+        let Some((id, awaiting)) = self.forget_retry(id) else { return };
         if self.inner.lost.len() >= MAX_AWAITING_RETRY {
             self.inner.lost.clear();
         }

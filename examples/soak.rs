@@ -170,8 +170,7 @@ fn totals(history: &[Value], run: u64, live: &Value) -> Totals {
     out.lost = field("lost");
     out.reconnects = field("reconnects");
     out.panics = field("panics");
-    out.unresolved =
-        open.iter().filter(|(line_run, _)| **line_run != run).map(|(_, count)| (*count).max(0) as u64).sum();
+    out.unresolved = open.values().sum::<i64>().max(0) as u64;
     out
 }
 
@@ -200,10 +199,7 @@ fn describe(all: &Totals) -> String {
         lines.push(format!("Tipos: {kinds}"));
     }
     lines.extend([
-        format!(
-            "Recuperados {} · perdidos {} · sin resolver por reinicios {}",
-            all.recovered, all.lost, all.unresolved
-        ),
+        format!("Recuperados {} · perdidos {} · sin resolver {}", all.recovered, all.lost, all.unresolved),
         format!("Reconexiones {} · desconexiones {} · pánicos {}", all.reconnects, all.disconnects, all.panics),
         format!("Grupos: entró a {} · salió de {} · pares número/LID nuevos {}", all.joined, all.left, all.lid_pairs),
         format!("Memoria máxima {memory}"),
@@ -214,6 +210,7 @@ fn describe(all: &Totals) -> String {
 fn summary(client: &Client, report: &Report) -> String {
     let stats = client.stats();
     let mut all = totals(&report.history(), report.run, &stats.to_json());
+    all.unresolved = all.unresolved.saturating_sub(stats.awaiting_recovery as u64);
     let rss = rss_mb();
     all.max_rss = all.max_rss.max(rss.unwrap_or_default());
     let up = stats.uptime.as_secs();
@@ -560,7 +557,7 @@ mod tests {
         assert_eq!((all.received, all.undecryptable, all.lost), (190, 4, 1));
         assert_eq!(all.kinds.get("sender_key"), Some(&[2, 1, 0]));
         assert_eq!(all.kinds.get("bad_mac"), Some(&[1, 0, 0]));
-        assert_eq!(all.unresolved, 1, "only the finished run can leave messages unresolved");
+        assert_eq!(all.unresolved, 2, "a failure stays open until some later run recovers it or gives up");
     }
 
     #[test]

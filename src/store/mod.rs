@@ -54,10 +54,11 @@ pub enum KeyKind {
     MediaCache,
     Outbox,
     RecentSend,
+    AwaitingRetry,
 }
 
 impl KeyKind {
-    pub const ALL: [KeyKind; 14] = [
+    pub const ALL: [KeyKind; 15] = [
         KeyKind::Session,
         KeyKind::PreKey,
         KeyKind::SenderKey,
@@ -72,6 +73,7 @@ impl KeyKind {
         KeyKind::MediaCache,
         KeyKind::Outbox,
         KeyKind::RecentSend,
+        KeyKind::AwaitingRetry,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -90,6 +92,7 @@ impl KeyKind {
             KeyKind::MediaCache => "media-cache",
             KeyKind::Outbox => "outbox",
             KeyKind::RecentSend => "recent-send",
+            KeyKind::AwaitingRetry => "awaiting-retry",
         }
     }
 
@@ -109,6 +112,7 @@ impl KeyKind {
             KeyKind::MediaCache => 12,
             KeyKind::Outbox => 13,
             KeyKind::RecentSend => 14,
+            KeyKind::AwaitingRetry => 15,
         }
     }
 

@@ -61,7 +61,7 @@ impl Client {
                 if !self.inner.seen.lock().first_time(key) {
                     super::guard::Counters::bump(&self.inner.counters.duplicates);
                     tracing::debug!(id = %info.id, "dropped a duplicate of a message we already delivered");
-                    self.inner.awaiting_retry.remove(&info.id);
+                    self.forget_retry(&info.id);
                     self.send_ack(&node, None);
                     return;
                 }
@@ -79,7 +79,7 @@ impl Client {
             }
             (Some(message), None) => self.acknowledge_delivery(&node, &info, &message),
             (_, Some(err)) => {
-                self.await_retry(&info, &err.to_string());
+                self.await_retry(&info, &err.to_string()).await;
                 if let Err(retry_err) = self.request_retry(&node, &info).await {
                     tracing::debug!(%retry_err, "could not send retry receipt");
                 }
