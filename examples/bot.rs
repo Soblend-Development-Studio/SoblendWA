@@ -81,7 +81,7 @@ async fn main() -> soblendwa::Result<()> {
             Event::Disconnected { reason, reconnecting } => {
                 println!("[desconectado] {reason:?} · reconectando: {}", if reconnecting { "sí" } else { "no" });
             }
-            Event::LoggedOut { reason } => {
+            Event::LoggedOut { reason, .. } => {
                 println!("Logged out: {reason}");
                 break;
             }

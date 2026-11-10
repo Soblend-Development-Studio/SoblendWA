@@ -4,7 +4,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use prost::Message as _;
 
-use super::{Client, Outcome};
+use super::{Client, Outcome, Platform};
 use crate::binary::Node;
 use crate::crypto::{self, verify};
 use crate::error::{Error, Result};
@@ -16,6 +16,21 @@ const CROCKFORD: &[u8; 32] = b"123456789ABCDEFGHJKLMNPQRSTVWXYZ";
 const PAIRING_ROUNDS: u32 = 2 << 16;
 const FIRST_QR_TTL: Duration = Duration::from_secs(60);
 const NEXT_QR_TTL: Duration = Duration::from_secs(20);
+
+fn pairing_display(platform: Platform) -> String {
+    let browser = match platform {
+        Platform::Desktop => "Chrome",
+        other => other.display_name(),
+    };
+    let os = if cfg!(target_os = "windows") {
+        "Windows"
+    } else if cfg!(target_os = "macos") {
+        "Mac OS"
+    } else {
+        "Linux"
+    };
+    format!("{browser} ({os})")
+}
 
 fn crockford(bytes: &[u8]) -> String {
     let mut out = String::new();
@@ -183,7 +198,7 @@ impl Client {
         .await?;
 
         let platform = self.inner.config.platform;
-        let display = format!("{} ({})", platform.display_name(), self.inner.config.device_name);
+        let display = pairing_display(platform);
         let request = Node::new("iq").attr("to", Jid::server()).attr("type", "set").attr("xmlns", "md").child_node(
             Node::new("link_code_companion_reg")
                 .attr("jid", me)
@@ -263,7 +278,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn crockford_produces_eight_chars() {
+    fn pairing_display_format() {
+        for platform in
+            [Platform::Chrome, Platform::Firefox, Platform::Safari, Platform::Edge, Platform::Opera, Platform::Desktop]
+        {
+            let display = pairing_display(platform);
+            let (browser, os) = display.trim_end_matches(')').split_once(" (").unwrap();
+            assert!(["Chrome", "Firefox", "Safari", "Edge", "Opera"].contains(&browser), "{display}");
+            assert!(["Windows", "Mac OS", "Linux"].contains(&os), "{display}");
+        }
+    }
+
+    #[test]
+    fn pair_code_chars() {
         let code = crockford(&[0xff, 0x00, 0xaa, 0x55, 0x12]);
         assert_eq!(code.len(), 8);
         assert!(code.bytes().all(|c| CROCKFORD.contains(&c)));

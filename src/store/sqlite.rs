@@ -166,7 +166,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sqlite_survives_reopen_and_isolates_accounts() {
+    async fn sqlite_reopen() {
         let dir = std::env::temp_dir().join(format!("soblendwa-sqlite-{}", crate::crypto::random_u32()));
         let path = dir.join("auth.db");
         {

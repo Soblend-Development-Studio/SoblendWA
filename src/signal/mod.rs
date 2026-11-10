@@ -364,7 +364,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn full_conversation_with_ratchet_steps() {
+    async fn ratchet_steps() {
         let alice = peer().await;
         let bob = peer().await;
         alice.repo.inject_bundle("bob.0", &bundle_for(&bob, 42).await).await.unwrap();
@@ -393,7 +393,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn out_of_order_messages_decrypt() {
+    async fn out_of_order() {
         let alice = peer().await;
         let bob = peer().await;
         alice.repo.inject_bundle("bob.0", &bundle_for(&bob, 1).await).await.unwrap();
@@ -425,7 +425,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sessions_survive_serialization() {
+    async fn session_serde() {
         let alice = peer().await;
         let bob = peer().await;
         alice.repo.inject_bundle("bob.0", &bundle_for(&bob, 5).await).await.unwrap();
@@ -435,5 +435,17 @@ mod tests {
         let restored = SignalRepository::new(bob.repo.store.clone(), &bob.creds);
         let (_, next) = alice.repo.encrypt("bob.0", b"after restart").await.unwrap();
         assert_eq!(restored.decrypt("alice.0", EncType::PreKey, &next).await.unwrap(), b"after restart");
+
+        use prost::Message as _;
+        let saved = alice.repo.store.get(KeyKind::Session, "bob.0").await.unwrap().unwrap();
+        let mut old_format = crate::proto::StoredSession::decode(saved.as_slice()).unwrap();
+        old_format.current.as_mut().unwrap().our_ratchet_public.clear();
+        let old = SessionRecord::from_bytes(&old_format.encode_to_vec()).unwrap();
+        let new = SessionRecord::from_bytes(&saved).unwrap();
+        assert_eq!(
+            old.to_bytes(),
+            new.to_bytes(),
+            "sessions saved before the public key was stored must load the same"
+        );
     }
 }

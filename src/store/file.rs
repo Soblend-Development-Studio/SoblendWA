@@ -381,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn torn_log_tail_is_ignored() {
+    fn torn_tail() {
         let mut log = LOG_MAGIC.to_vec();
         encode_record(&mut log, OP_SET, KeyKind::Session, "a.0", Some(&vec![1, 2]));
         encode_record(&mut log, OP_SET, KeyKind::Session, "b.0", Some(&vec![3, 4]));

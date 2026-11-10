@@ -114,6 +114,8 @@ pub struct StoredSessionState {
     pub base_key: Vec<u8>,
     #[prost(message, optional, tag = "10")]
     pub pending: Option<StoredPendingPreKey>,
+    #[prost(bytes = "vec", tag = "11")]
+    pub our_ratchet_public: Vec<u8>,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]

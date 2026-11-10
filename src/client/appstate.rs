@@ -898,7 +898,7 @@ mod tests {
     }
 
     #[test]
-    fn lthash_add_then_remove_returns_to_start() {
+    fn lthash_add_remove() {
         let mut state = HashState::default();
         state.mix(b"index-a", &[1; 32], SET);
         state.mix(b"index-b", &[2; 32], SET);
@@ -911,7 +911,7 @@ mod tests {
     }
 
     #[test]
-    fn decodes_records_and_tracks_state() {
+    fn records_and_state() {
         let key_id = b"key-1".to_vec();
         let keys = MutationKeys::derive(&[7; 32]);
         let mute = SyncActionValue {
@@ -941,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_keys_are_reported() {
+    fn missing_keys() {
         let keys = MutationKeys::derive(&[1; 32]);
         let records = [record(&keys, b"other", &["pin_v1", "1@s.whatsapp.net"], SyncActionValue::default(), SET)];
         let mut out = Vec::new();

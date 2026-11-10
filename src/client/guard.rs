@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -96,11 +97,22 @@ pub(crate) struct Counters {
     pub media_reused: AtomicU64,
     pub outbox_resent: AtomicU64,
     pub panics: AtomicU64,
+    pub lost: AtomicU64,
 }
 
 impl Counters {
     pub(crate) fn bump(counter: &AtomicU64) {
         counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn drop_one(counter: &AtomicU64) {
+        let mut current = counter.load(Ordering::Relaxed);
+        while current > 0 {
+            match counter.compare_exchange_weak(current, current - 1, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
     }
 }
 
@@ -112,6 +124,7 @@ pub struct Stats {
     pub sent: u64,
     pub undecryptable: u64,
     pub recovered: u64,
+    pub lost: u64,
     pub duplicates: u64,
     pub awaiting_recovery: usize,
     pub reconnects: u64,
@@ -125,6 +138,73 @@ pub struct Stats {
     pub pending_queries: usize,
     pub open_lanes: usize,
     pub latency: Option<Duration>,
+    pub send_timings: TimingSummary,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Spread {
+    pub p50: Duration,
+    pub p95: Duration,
+    pub max: Duration,
+}
+
+impl Spread {
+    fn of(mut values: Vec<Duration>) -> Option<Spread> {
+        let last = values.len().checked_sub(1)?;
+        let max = values.iter().copied().max()?;
+        let p95 = *values.select_nth_unstable(last * 95 / 100).1;
+        let p50 = *values.select_nth_unstable(last * 50 / 100).1;
+        Some(Spread { p50, p95, max })
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct TimingWindow {
+    samples: VecDeque<SendTimings>,
+    summary: Option<TimingSummary>,
+}
+
+impl TimingWindow {
+    pub(crate) fn push(&mut self, timings: SendTimings, capacity: usize) {
+        if self.samples.len() >= capacity {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(timings);
+        self.summary = None;
+    }
+
+    pub(crate) fn summary(&mut self) -> TimingSummary {
+        let samples = &mut self.samples;
+        *self.summary.get_or_insert_with(|| TimingSummary::of(samples.make_contiguous()))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TimingSummary {
+    pub samples: usize,
+    pub queued: Spread,
+    pub upload: Option<Spread>,
+    pub prepare: Spread,
+    pub encrypt: Spread,
+    pub server: Option<Spread>,
+    pub total: Spread,
+}
+
+impl TimingSummary {
+    pub(crate) fn of(samples: &[SendTimings]) -> TimingSummary {
+        let pick = |field: fn(&SendTimings) -> Option<Duration>| {
+            Spread::of(samples.iter().filter_map(field).collect::<Vec<_>>())
+        };
+        TimingSummary {
+            samples: samples.len(),
+            queued: pick(|t| Some(t.queued)).unwrap_or_default(),
+            upload: pick(|t| t.upload),
+            prepare: pick(|t| Some(t.prepare)).unwrap_or_default(),
+            encrypt: pick(|t| Some(t.encrypt)).unwrap_or_default(),
+            server: pick(|t| t.server),
+            total: pick(|t| Some(t.total())).unwrap_or_default(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -154,6 +234,7 @@ impl Client {
             sent: read(&counters.sent),
             undecryptable: read(&counters.undecryptable),
             recovered: read(&counters.recovered),
+            lost: read(&counters.lost),
             duplicates: read(&counters.duplicates),
             awaiting_recovery: self.inner.awaiting_retry.len(),
             reconnects: read(&counters.reconnects),
@@ -167,6 +248,7 @@ impl Client {
             pending_queries: self.inner.pending.lock().len(),
             open_lanes: self.inner.chat_lanes.len(),
             latency: (latency > 0).then(|| Duration::from_micros(latency)),
+            send_timings: self.inner.timing_window.lock().summary(),
         }
     }
 
@@ -206,7 +288,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_runaway_loop_is_cut_but_normal_traffic_flows() {
+    fn percentiles() {
+        let mut seed = 7u64;
+        for len in [1usize, 2, 3, 20, 99, 512] {
+            let values: Vec<Duration> = (0..len)
+                .map(|_| {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    Duration::from_micros(seed >> 44)
+                })
+                .collect();
+            let mut sorted = values.clone();
+            sorted.sort_unstable();
+            let at = |percent: usize| sorted[(len - 1) * percent / 100];
+            assert_eq!(Spread::of(values), Some(Spread { p50: at(50), p95: at(95), max: at(100) }), "len {len}");
+        }
+        assert_eq!(Spread::of(Vec::new()), None);
+
+        let mut window = TimingWindow::default();
+        let sample = |micros| SendTimings { encrypt: Duration::from_micros(micros), ..Default::default() };
+        window.push(sample(5), 2);
+        assert_eq!(window.summary().encrypt.max, Duration::from_micros(5));
+        window.push(sample(9), 2);
+        window.push(sample(1), 2);
+        let summary = window.summary();
+        assert_eq!(
+            (summary.samples, summary.encrypt.max, summary.encrypt.p50),
+            (2, Duration::from_micros(9), Duration::from_micros(1))
+        );
+    }
+
+    #[test]
+    fn runaway_loop() {
         let limiter = Limiter::default();
         let limit = SendLimit { per_minute: 600, burst: 50, per_chat_per_minute: 60, per_chat_burst: 5 };
         let spammed = Jid::phone("5219900000001");
@@ -221,7 +333,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sends_to_one_chat_keep_their_order_while_other_chats_flow() {
+    async fn per_chat_send_order() {
         let (client, _events) = Client::builder().build().await.unwrap();
         let slow_chat = Jid::phone("5215500000001");
         let other_chat = Jid::phone("5215500000002");
@@ -259,7 +371,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_panicking_handler_does_not_take_the_session_down() {
+    async fn handler_panic() {
         let (client, _events) = Client::builder().build().await.unwrap();
         client.contained("a test handler", async { panic!("bug in a command") }).await;
         client.contained("a test handler", async {}).await;

@@ -23,7 +23,7 @@ async fn main() -> soblendwa::Result<()> {
             }
             Event::PairSuccess { id, .. } => println!("Linked as {id}"),
             Event::Connected => println!("Connected, the session is stored in ./session"),
-            Event::LoggedOut { reason } => {
+            Event::LoggedOut { reason, .. } => {
                 println!("Logged out: {reason}");
                 break;
             }

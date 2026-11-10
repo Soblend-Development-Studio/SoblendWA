@@ -35,7 +35,7 @@ async fn wait_for<T>(
             if let Event::AccountBlocked { code, reason, .. } = &event {
                 return Err(format!("whatsapp blocked the account ({code}): {reason}"));
             }
-            if let Event::LoggedOut { reason } = &event {
+            if let Event::LoggedOut { reason, .. } = &event {
                 return Err(format!("the session was logged out: {reason}"));
             }
             if let Some(found) = pick(&event) {

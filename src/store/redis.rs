@@ -88,3 +88,20 @@ impl Backend for Redis {
         pipe.query_async::<()>(&mut self.connection.clone()).await.map_err(failed)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::batched;
+
+    #[tokio::test]
+    #[ignore = "set SOBLEND_REDIS_URL to a Redis you can write to"]
+    async fn redis_roundtrip() {
+        let url = std::env::var("SOBLEND_REDIS_URL").unwrap();
+        batched::tests::against_a_server(|account| {
+            let url = url.clone();
+            async move { RedisStore::connect_account(&url, &account).await.unwrap() }
+        })
+        .await;
+    }
+}

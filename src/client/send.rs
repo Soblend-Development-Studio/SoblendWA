@@ -149,12 +149,12 @@ impl Client {
     pub async fn send_message_with(&self, chat: &Jid, message: Message, options: SendOptions) -> Result<String> {
         let chat = chat.to_non_device();
         self.admit_send(&chat)?;
-        self.send_in_lane(&chat, self.deliver(&chat, message, options, false)).await
+        self.send_in_lane(&chat, Box::pin(self.deliver(&chat, message, options, false))).await
     }
 
     pub(crate) async fn resend(&self, chat: &Jid, message: Message, options: SendOptions) -> Result<String> {
         let chat = chat.to_non_device();
-        self.send_in_lane(&chat, self.deliver(&chat, message, options, true)).await
+        self.send_in_lane(&chat, Box::pin(self.deliver(&chat, message, options, true))).await
     }
 
     pub(crate) async fn send_in_lane(
@@ -270,7 +270,7 @@ impl Client {
             };
             let devices = self.devices_for(&[chat.clone(), own.to_non_device()]).await?;
             if devices.is_empty() {
-                return Err(Error::other(format!("{chat} has no reachable devices")));
+                return Err(Error::NoDevices(chat.clone()));
             }
             self.ensure_sessions(&devices).await?;
             let (mine, theirs): (Vec<Jid>, Vec<Jid>) = devices.into_iter().partition(|d| d.same_user(&own));
@@ -539,5 +539,25 @@ impl Client {
             }
         }
         self.send_node(&stanza.children(content))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::store::MemoryStore;
+
+    #[tokio::test]
+    async fn small_futures() {
+        let (client, _events) = Client::builder().store(Arc::new(MemoryStore::new())).build().await.unwrap();
+        let chat = Jid::phone("5215511111111");
+        let sizes = [
+            std::mem::size_of_val(&client.send_text(&chat, "hola")),
+            std::mem::size_of_val(&client.send_message(&chat, Message::text("hola"))),
+            std::mem::size_of_val(&client.send_image(&chat, &[], None)),
+        ];
+        assert!(sizes.iter().all(|&size| size < 4096), "send futures must stay small: {sizes:?}");
     }
 }

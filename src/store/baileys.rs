@@ -283,7 +283,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn imports_a_real_baileys_folder() {
+    async fn baileys_import() {
         let expected: Value =
             serde_json::from_slice(&std::fs::read(fixtures().join("baileys-expected.json")).unwrap()).unwrap();
         let (repo, bob) = import_and_check(&fixtures().join("baileys-auth"), &expected).await;
@@ -293,7 +293,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "set SOBLEND_BAILEYS_WORK to a folder produced by the libsignal export script"]
-    async fn answers_libsignal_after_importing() {
+    async fn libsignal_interop() {
         let work = PathBuf::from(std::env::var("SOBLEND_BAILEYS_WORK").unwrap());
         let expected: Value = serde_json::from_slice(&std::fs::read(work.join("expected.json")).unwrap()).unwrap();
         let (repo, bob) = import_and_check(&work.join("auth"), &expected).await;
@@ -306,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_every_buffer_encoding_baileys_produces() {
+    fn baileys_buffers() {
         let expected = vec![5u8, 0, 255];
         for value in [
             serde_json::json!("BQD/"),

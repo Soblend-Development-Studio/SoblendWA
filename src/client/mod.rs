@@ -45,7 +45,7 @@ pub use business::{
 pub use community::LinkedGroup;
 pub use enrich::{image_dimensions, profile_picture, thumbnail};
 pub use groups::{GroupInfo, GroupParticipant, JoinRequest, ParticipantAction, ParticipantResult};
-pub use guard::{SendLimit, SendTimings, Stats};
+pub use guard::{SendLimit, SendTimings, Spread, Stats, TimingSummary};
 pub use link_preview::{LinkPreview, LinkPreviewConfig, LinkPreviewFetcher, LinkThumbnail, PreviewChoice};
 pub use media::{Downloadable, MediaKind, MediaOptions, UploadedMedia};
 pub use newsletter::{NewsletterInfo, NewsletterMessage};
@@ -60,7 +60,7 @@ pub use usync::OnWhatsApp;
 use crate::binary::{self, Node};
 use crate::chats::ChatStore;
 use crate::error::{Error, Result};
-use crate::events::{DisconnectReason, Event};
+use crate::events::{DisconnectReason, Event, MessageInfo};
 use crate::jid::Jid;
 use crate::proto;
 use crate::signal::SignalRepository;
@@ -70,6 +70,15 @@ pub const DEFAULT_VERSION: [u32; 3] = [2, 3000, 1052682108];
 const WS_URL: &str = "wss://web.whatsapp.com/ws/chat";
 const SENT_CACHE_LIMIT: usize = 1024;
 const MAX_AWAITING_RETRY: usize = 4096;
+const RECENT_JOIN_WINDOW: Duration = Duration::from_secs(5 * 60);
+const TIMING_WINDOW: usize = 512;
+
+pub(crate) struct Awaiting {
+    chat: Jid,
+    sender: Jid,
+    error: String,
+    since: Instant,
+}
 const SEEN_MESSAGES: usize = 8192;
 
 pub type EventStream = mpsc::UnboundedReceiver<Event>;
@@ -140,6 +149,7 @@ pub struct Config {
     pub trust_root: Option<[u8; 32]>,
     pub media_endpoint: Option<String>,
     pub link_previews: LinkPreviewConfig,
+    pub retry_deadline: Duration,
 }
 
 impl Default for Config {
@@ -165,6 +175,7 @@ impl Default for Config {
             trust_root: None,
             media_endpoint: None,
             link_previews: LinkPreviewConfig::default(),
+            retry_deadline: Duration::from_secs(10 * 60),
         }
     }
 }
@@ -173,6 +184,7 @@ pub struct ClientBuilder {
     config: Config,
     store: Option<Arc<dyn Store>>,
     chat_store: Option<Arc<ChatStore>>,
+    media_store: Option<Arc<dyn Store>>,
 }
 
 impl ClientBuilder {
@@ -271,6 +283,16 @@ impl ClientBuilder {
         self
     }
 
+    pub fn media_store(mut self, store: Arc<dyn Store>) -> Self {
+        self.media_store = Some(store);
+        self
+    }
+
+    pub fn retry_deadline(mut self, deadline: Duration) -> Self {
+        self.config.retry_deadline = deadline;
+        self
+    }
+
     pub fn workers(mut self, workers: usize) -> Self {
         self.config.workers = workers.max(1);
         self
@@ -311,6 +333,7 @@ impl ClientBuilder {
             signal: RwLock::new(Arc::new(SignalRepository::new(store.clone(), &creds))),
             creds: RwLock::new(creds),
             config: self.config,
+            media_store: self.media_store.unwrap_or_else(|| store.clone()),
             store,
             chat_store: self.chat_store,
             events,
@@ -344,7 +367,10 @@ impl ClientBuilder {
             issuing_tokens: DashSet::new(),
             media_retries: DashMap::new(),
             fetch_locks: DashMap::new(),
-            awaiting_retry: DashSet::new(),
+            awaiting_retry: DashMap::new(),
+            lost: DashSet::new(),
+            recent_joins: DashMap::new(),
+            timing_window: Mutex::new(guard::TimingWindow::default()),
             in_flight: DashSet::new(),
             seen: Mutex::new(SeenMessages::default()),
             counters: guard::Counters::default(),
@@ -373,7 +399,7 @@ async fn lane_worker(inner: Weak<Inner>, mut rx: mpsc::UnboundedReceiver<Node>) 
 pub(crate) enum Outcome {
     Stopped,
     Restart,
-    LoggedOut(String),
+    LoggedOut { reason: String, cause: crate::events::LogoutCause, code: Option<u16> },
     Replaced,
     QrTimeout,
     Outdated,
@@ -385,7 +411,7 @@ impl Outcome {
     fn reason(&self) -> DisconnectReason {
         match self {
             Outcome::Blocked { code, .. } => DisconnectReason::AccountBlocked(*code),
-            Outcome::Stopped | Outcome::LoggedOut(_) => DisconnectReason::Manual,
+            Outcome::Stopped | Outcome::LoggedOut { .. } => DisconnectReason::Manual,
             Outcome::Restart => DisconnectReason::RestartRequired,
             Outcome::Replaced => DisconnectReason::Replaced,
             Outcome::QrTimeout => DisconnectReason::QrTimeout,
@@ -470,6 +496,7 @@ impl SentCache {
 pub(crate) struct Inner {
     config: Config,
     store: Arc<dyn Store>,
+    media_store: Arc<dyn Store>,
     chat_store: Option<Arc<ChatStore>>,
     creds: RwLock<Creds>,
     signal: RwLock<Arc<SignalRepository>>,
@@ -504,7 +531,10 @@ pub(crate) struct Inner {
     issuing_tokens: DashSet<Jid>,
     media_retries: DashMap<String, oneshot::Sender<Node>>,
     fetch_locks: DashMap<Jid, Arc<tokio::sync::Mutex<()>>>,
-    awaiting_retry: DashSet<String>,
+    awaiting_retry: DashMap<String, Awaiting>,
+    lost: DashSet<String>,
+    recent_joins: DashMap<Jid, Instant>,
+    timing_window: Mutex<guard::TimingWindow>,
     in_flight: DashSet<String>,
     seen: Mutex<SeenMessages>,
     counters: guard::Counters,
@@ -521,7 +551,7 @@ pub struct Client {
 
 impl Client {
     pub fn builder() -> ClientBuilder {
-        ClientBuilder { config: Config::default(), store: None, chat_store: None }
+        ClientBuilder { config: Config::default(), store: None, chat_store: None, media_store: None }
     }
 
     pub fn config(&self) -> &Config {
@@ -557,6 +587,12 @@ impl Client {
     }
 
     pub async fn connect(&self) -> Result<()> {
+        if *self.inner.stop.borrow() {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while self.inner.running.load(Ordering::Acquire) && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
         if self.inner.running.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
@@ -591,7 +627,11 @@ impl Client {
             }
         }
         self.inner.stop.send_replace(true);
-        self.end_link(Outcome::LoggedOut("logged out by the user".into()));
+        self.end_link(Outcome::LoggedOut {
+            reason: "logged out by the user".into(),
+            cause: crate::events::LogoutCause::UserLogout,
+            code: None,
+        });
         self.reset_session().await
     }
 
@@ -615,7 +655,16 @@ impl Client {
         let recovered = match &event {
             Event::Message(message) => {
                 guard::Counters::bump(&self.inner.counters.received);
-                self.inner.awaiting_retry.remove(&message.info.id).map(|id| Event::MessageRecovered {
+                let id = &message.info.id;
+                let waiting = self.inner.awaiting_retry.remove(id).map(|(id, _)| id);
+                let late = || {
+                    let found = self.inner.lost.remove(id);
+                    if found.is_some() {
+                        guard::Counters::drop_one(&self.inner.counters.lost);
+                    }
+                    found
+                };
+                waiting.or_else(late).map(|id| Event::MessageRecovered {
                     id,
                     chat: message.info.chat.clone(),
                     sender: message.info.sender.clone(),
@@ -637,11 +686,70 @@ impl Client {
         }
     }
 
-    pub(crate) fn await_retry(&self, id: &str) {
-        if self.inner.awaiting_retry.len() >= MAX_AWAITING_RETRY {
-            self.inner.awaiting_retry.clear();
+    pub(crate) fn await_retry(&self, info: &MessageInfo, error: &str) {
+        if self.inner.awaiting_retry.contains_key(&info.id) {
+            return;
         }
-        self.inner.awaiting_retry.insert(id.to_owned());
+        if self.inner.awaiting_retry.len() >= MAX_AWAITING_RETRY {
+            tracing::warn!(id = %info.id, "too many messages awaiting a retry, not tracking this one");
+            return;
+        }
+        let awaiting = Awaiting {
+            chat: info.chat.clone(),
+            sender: info.sender.clone(),
+            error: error.to_owned(),
+            since: Instant::now(),
+        };
+        self.inner.awaiting_retry.insert(info.id.clone(), awaiting);
+        let client = Arc::downgrade(&self.inner);
+        let id = info.id.clone();
+        let deadline = self.inner.config.retry_deadline;
+        tokio::spawn(async move {
+            tokio::time::sleep(deadline).await;
+            let Some(inner) = client.upgrade() else { return };
+            Client { inner }.give_up_on(&id);
+        });
+    }
+
+    fn give_up_on(&self, id: &str) {
+        let Some((id, awaiting)) = self.inner.awaiting_retry.remove(id) else { return };
+        if self.inner.lost.len() >= MAX_AWAITING_RETRY {
+            self.inner.lost.clear();
+        }
+        self.inner.lost.insert(id.clone());
+        guard::Counters::bump(&self.inner.counters.lost);
+        tracing::warn!(%id, chat = %awaiting.chat, error = %awaiting.error, "gave up waiting for a message to be resent");
+        self.emit(Event::MessageLost {
+            id,
+            chat: awaiting.chat,
+            sender: awaiting.sender,
+            error: awaiting.error,
+            waited: awaiting.since.elapsed(),
+        });
+    }
+
+    pub(crate) fn announce_join(&self, group: &Jid, author: Option<Jid>, via: crate::events::JoinVia) {
+        let now = Instant::now();
+        let fresh = match self.inner.recent_joins.get(group) {
+            Some(at) => now.duration_since(*at) > RECENT_JOIN_WINDOW,
+            None => true,
+        };
+        if !fresh {
+            return;
+        }
+        if self.inner.recent_joins.len() > 1024 {
+            self.inner.recent_joins.retain(|_, at| now.duration_since(*at) <= RECENT_JOIN_WINDOW);
+        }
+        self.inner.recent_joins.insert(group.clone(), now);
+        self.emit(Event::JoinedGroup { group: group.clone(), author, via });
+    }
+
+    pub(crate) fn forget_join(&self, group: &Jid) {
+        self.inner.recent_joins.remove(group);
+    }
+
+    pub(crate) fn record_timings(&self, timings: SendTimings) {
+        self.inner.timing_window.lock().push(timings, TIMING_WINDOW);
     }
 
     pub(crate) fn require_me(&self) -> Result<Jid> {

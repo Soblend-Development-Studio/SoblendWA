@@ -4,8 +4,8 @@ use super::{Client, Outcome};
 use crate::binary::Node;
 use crate::error::Result;
 use crate::events::{
-    BlocklistChange, CallEvent, CallKind, ChatState, ChatStateKind, Event, GroupAction, GroupUpdate, Presence, Receipt,
-    ReceiptType, ServerAck,
+    BlocklistChange, CallEvent, CallKind, ChatState, ChatStateKind, Event, GroupAction, GroupUpdate, JoinVia,
+    LogoutCause, Presence, Receipt, ReceiptType, ServerAck,
 };
 use crate::jid::Jid;
 use crate::message::now_secs;
@@ -132,6 +132,9 @@ impl Client {
             let latency = sent.sent_at(&id).map(|at| at.elapsed());
             (latency, sent.timings(&id).map(|timings| super::SendTimings { server: latency, ..timings }))
         };
+        if let (Some(timings), None) = (timings, error) {
+            self.record_timings(timings);
+        }
         self.inner.in_flight.remove(&id);
         if self.inner.config.outbox {
             let (client, id) = (self.clone(), id.clone());
@@ -183,7 +186,11 @@ impl Client {
             "402" => blocked(402, "the account is temporarily banned"),
             "403" => blocked(403, "the account is locked, open WhatsApp on the phone to unlock it"),
             "406" => blocked(406, "the account is banned"),
-            code if LOGGED_OUT_CODES.contains(&code) => Outcome::LoggedOut(format!("login failure {code}")),
+            code if LOGGED_OUT_CODES.contains(&code) => Outcome::LoggedOut {
+                reason: format!("whatsapp refused the saved session at login (failure {code})"),
+                cause: LogoutCause::SessionInvalidated,
+                code: code.parse().ok(),
+            },
             "405" => Outcome::Outdated,
             code => Outcome::Lost(format!("login failure {code}")),
         };
@@ -196,9 +203,17 @@ impl Client {
         let outcome = match (code, reason.map(|r| r.tag.as_ref())) {
             ("515", _) => Outcome::Restart,
             (_, Some("conflict")) if reason.is_some_and(|r| r.attr_is("type", "device_removed")) => {
-                Outcome::LoggedOut("this device was removed from the phone".into())
+                Outcome::LoggedOut {
+                    reason: "the phone removed this linked device".into(),
+                    cause: LogoutCause::RemovedFromPhone,
+                    code: code.parse().ok(),
+                }
             }
-            ("401", _) => Outcome::LoggedOut("stream error 401".into()),
+            ("401", tag) => Outcome::LoggedOut {
+                reason: format!("whatsapp ended the session (stream error 401 {})", tag.unwrap_or("without detail")),
+                cause: LogoutCause::SessionInvalidated,
+                code: Some(401),
+            },
             (_, Some("conflict")) => Outcome::Replaced,
             (code, tag) => Outcome::Lost(format!("stream error {code} {}", tag.unwrap_or("unknown"))),
         };
@@ -431,7 +446,8 @@ impl Client {
         let author = node.attr_jid("participant");
         let timestamp = node.attr_i64("t").unwrap_or_else(now_secs);
         for child in node.nodes() {
-            let participants: Vec<Jid> = child.children_by("participant").filter_map(|p| p.attr_jid("jid")).collect();
+            let listed = if child.tag.as_ref() == "create" { child.child("group").unwrap_or(child) } else { child };
+            let participants: Vec<Jid> = listed.children_by("participant").filter_map(|p| p.attr_jid("jid")).collect();
             let action = match child.tag.as_ref() {
                 "create" => GroupAction::Created,
                 "add" => GroupAction::Add,
@@ -452,6 +468,17 @@ impl Client {
             if matches!(action, GroupAction::Remove | GroupAction::Leave) {
                 self.rotate_sender_key(&group).await?;
             }
+            let includes_me = participants.iter().any(|p| self.is_me(p));
+            let by_me = author.as_ref().is_some_and(|a| self.is_me(a));
+            let joined = match &action {
+                GroupAction::Created if includes_me || by_me => Some(JoinVia::Created),
+                GroupAction::Add if includes_me && (by_me || child.attr_is("reason", "invite")) => {
+                    Some(JoinVia::Invite)
+                }
+                GroupAction::Add if includes_me => Some(JoinVia::Added),
+                _ => None,
+            };
+            let left = matches!(action, GroupAction::Remove | GroupAction::Leave) && includes_me;
             self.emit(Event::GroupUpdate(GroupUpdate {
                 group: group.clone(),
                 author: author.clone(),
@@ -459,6 +486,13 @@ impl Client {
                 participants,
                 timestamp,
             }));
+            if let Some(via) = joined {
+                self.announce_join(&group, author.clone().filter(|a| !self.is_me(a)), via);
+            }
+            if left {
+                self.forget_join(&group);
+                self.emit(Event::LeftGroup { group: group.clone(), author: author.clone(), removed: !by_me });
+            }
         }
         Ok(())
     }

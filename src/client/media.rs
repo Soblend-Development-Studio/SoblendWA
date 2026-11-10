@@ -587,7 +587,7 @@ impl Client {
             let message = prepare.await?;
             self.inner.upload_times.lock().insert(id.clone(), clock.elapsed());
             let options = super::SendOptions { id: Some(id.clone()), ..Default::default() };
-            let sent = self.deliver(&chat, message, options, false).await;
+            let sent = Box::pin(self.deliver(&chat, message, options, false)).await;
             self.inner.upload_times.lock().remove(&id);
             sent
         })
@@ -595,7 +595,7 @@ impl Client {
     }
 
     pub async fn send_media(&self, chat: &Jid, data: &[u8], kind: MediaKind, options: MediaOptions) -> Result<String> {
-        self.send_prepared(chat, self.prepare_media(data, kind, options)).await
+        self.send_prepared(chat, Box::pin(self.prepare_media(data, kind, options))).await
     }
 
     pub async fn send_image(&self, chat: &Jid, data: &[u8], caption: Option<&str>) -> Result<String> {

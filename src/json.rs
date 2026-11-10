@@ -89,7 +89,7 @@ pub fn media_json(message: &proto::Message) -> Value {
     }
 }
 
-fn link_preview_json(message: &proto::Message) -> Value {
+pub(crate) fn link_preview_json(message: &proto::Message) -> Value {
     let Some(text) = &message.unwrapped().extended_text_message else { return Value::Null };
     if text.matched_text.is_none() && text.title.is_none() {
         return Value::Null;
@@ -106,7 +106,7 @@ fn link_preview_json(message: &proto::Message) -> Value {
     })
 }
 
-fn quoted_json(message: &proto::Message) -> Value {
+pub(crate) fn quoted_json(message: &proto::Message) -> Value {
     let Some(context) = message.context_info() else { return Value::Null };
     let Some(id) = &context.stanza_id else { return Value::Null };
     let quoted = context.quoted_message.as_deref();
@@ -136,25 +136,37 @@ impl MessageEvent {
             "ageSecs": age,
             "quotedId": context.and_then(|c| c.stanza_id.clone()),
             "mentions": jids(&self.mentions()),
-            "reaction": self.message.reaction_message.as_ref().map(|r| json!({
-                "targetId": r.key.as_ref().and_then(|k| k.id.clone()),
-                "emoji": r.text,
-            })),
-            "reply": self.message.interactive_reply().map(|reply| json!({
-                "id": reply.id,
-                "text": reply.text,
-                "source": match reply.source {
-                    ReplySource::Buttons => "buttons",
-                    ReplySource::List => "list",
-                    ReplySource::Template => "template",
-                    ReplySource::NativeFlow => "nativeFlow",
-                },
-                "flow": reply.flow,
-                "params": reply.params,
-            })),
+            "reaction": reaction_json(&self.message),
+            "reply": reply_json(&self.message),
             "proto": STANDARD.encode(self.raw.encode_to_vec()),
         })
     }
+}
+
+pub(crate) fn reaction_json(message: &proto::Message) -> Value {
+    message.reaction_message.as_ref().map_or(Value::Null, |r| {
+        json!({
+            "targetId": r.key.as_ref().and_then(|k| k.id.clone()),
+            "emoji": r.text,
+        })
+    })
+}
+
+pub(crate) fn reply_json(message: &proto::Message) -> Value {
+    message.interactive_reply().map_or(Value::Null, |reply| {
+        json!({
+            "id": reply.id,
+            "text": reply.text,
+            "source": match reply.source {
+                ReplySource::Buttons => "buttons",
+                ReplySource::List => "list",
+                ReplySource::Template => "template",
+                ReplySource::NativeFlow => "nativeFlow",
+            },
+            "flow": reply.flow,
+            "params": reply.params,
+        })
+    })
 }
 
 fn micros(duration: std::time::Duration) -> u64 {
@@ -185,19 +197,23 @@ fn disconnect_reason(reason: &DisconnectReason) -> Value {
 }
 
 fn receipt_kind(kind: &ReceiptType) -> String {
+    receipt_name(kind).to_owned()
+}
+
+pub(crate) fn receipt_name(kind: &ReceiptType) -> &str {
     match kind {
-        ReceiptType::Delivered => "delivered".into(),
-        ReceiptType::Sender => "sender".into(),
-        ReceiptType::Read => "read".into(),
-        ReceiptType::ReadSelf => "read-self".into(),
-        ReceiptType::Played => "played".into(),
-        ReceiptType::PlayedSelf => "played-self".into(),
-        ReceiptType::Retry => "retry".into(),
-        ReceiptType::Inactive => "inactive".into(),
-        ReceiptType::PeerMessage => "peer_msg".into(),
-        ReceiptType::HistorySync => "hist_sync".into(),
-        ReceiptType::ServerError => "server-error".into(),
-        ReceiptType::Other(other) => other.clone(),
+        ReceiptType::Delivered => "delivered",
+        ReceiptType::Sender => "sender",
+        ReceiptType::Read => "read",
+        ReceiptType::ReadSelf => "read-self",
+        ReceiptType::Played => "played",
+        ReceiptType::PlayedSelf => "played-self",
+        ReceiptType::Retry => "retry",
+        ReceiptType::Inactive => "inactive",
+        ReceiptType::PeerMessage => "peer_msg",
+        ReceiptType::HistorySync => "hist_sync",
+        ReceiptType::ServerError => "server-error",
+        ReceiptType::Other(other) => other,
     }
 }
 
@@ -267,6 +283,10 @@ impl Event {
             Event::Message(_) => "message",
             Event::UndecryptableMessage { .. } => "undecryptableMessage",
             Event::MessageRecovered { .. } => "messageRecovered",
+            Event::MessageLost { .. } => "messageLost",
+            Event::JoinedGroup { .. } => "joinedGroup",
+            Event::LeftGroup { .. } => "leftGroup",
+            Event::LidMapping { .. } => "lidMapping",
             Event::PictureChanged { .. } => "pictureChanged",
             Event::AboutChanged { .. } => "aboutChanged",
             Event::BlocklistChanged { .. } => "blocklistChanged",
@@ -296,7 +316,9 @@ impl Event {
             Event::Disconnected { reason, reconnecting } => {
                 json!({ "reason": disconnect_reason(reason), "reconnecting": reconnecting })
             }
-            Event::LoggedOut { reason } => json!({ "reason": reason }),
+            Event::LoggedOut { reason, cause, code } => {
+                json!({ "reason": reason, "cause": cause.as_str(), "code": code })
+            }
             Event::AccountBlocked { code, reason, expires } => {
                 json!({ "code": code, "reason": reason, "expires": expires })
             }
@@ -306,6 +328,16 @@ impl Event {
             Event::MessageRecovered { id, chat, sender } => {
                 json!({ "id": id, "chat": jid(chat), "sender": jid(sender) })
             }
+            Event::MessageLost { id, chat, sender, error, waited } => json!({
+                "id": id, "chat": jid(chat), "sender": jid(sender), "error": error, "waitedSecs": waited.as_secs(),
+            }),
+            Event::JoinedGroup { group, author, via } => {
+                json!({ "group": jid(group), "author": opt_jid(author), "via": via.as_str() })
+            }
+            Event::LeftGroup { group, author, removed } => {
+                json!({ "group": jid(group), "author": opt_jid(author), "removed": removed })
+            }
+            Event::LidMapping { phone, lid } => json!({ "phone": jid(phone), "lid": jid(lid) }),
             Event::PictureChanged { jid: who, author, picture_id, removed, timestamp } => json!({
                 "jid": jid(who), "author": opt_jid(author), "pictureId": picture_id,
                 "removed": removed, "timestamp": timestamp,
@@ -412,6 +444,7 @@ impl crate::client::Stats {
             "sent": self.sent,
             "undecryptable": self.undecryptable,
             "recovered": self.recovered,
+            "lost": self.lost,
             "duplicates": self.duplicates,
             "awaitingRecovery": self.awaiting_recovery,
             "reconnects": self.reconnects,
@@ -425,8 +458,25 @@ impl crate::client::Stats {
             "pendingQueries": self.pending_queries,
             "openLanes": self.open_lanes,
             "latencyMicros": self.latency.map(micros),
+            "sendTimings": timing_summary_json(&self.send_timings),
         })
     }
+}
+
+fn spread_json(spread: &crate::client::Spread) -> Value {
+    json!({ "p50": micros(spread.p50), "p95": micros(spread.p95), "max": micros(spread.max) })
+}
+
+fn timing_summary_json(summary: &crate::client::TimingSummary) -> Value {
+    json!({
+        "samples": summary.samples,
+        "queuedMicros": spread_json(&summary.queued),
+        "uploadMicros": summary.upload.as_ref().map(spread_json),
+        "prepareMicros": spread_json(&summary.prepare),
+        "encryptMicros": spread_json(&summary.encrypt),
+        "serverMicros": summary.server.as_ref().map(spread_json),
+        "totalMicros": spread_json(&summary.total),
+    })
 }
 #[cfg(test)]
 mod tests {
@@ -436,7 +486,7 @@ mod tests {
     use crate::proto::Message;
 
     #[test]
-    fn messages_become_flat_json() {
+    fn flat_json() {
         let info = MessageInfo {
             id: "3EB0ABC".into(),
             chat: Jid::group("120363000000000001"),
@@ -465,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn wrapped_media_and_quotes_come_out_flat() {
+    fn flat_media_and_quotes() {
         use crate::proto::{ContextInfo, FutureProofMessage, ImageMessage};
         let quoted = Message {
             image_message: Some(Box::new(ImageMessage {
@@ -513,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn nodes_keep_binary_payloads_readable() {
+    fn binary_payloads() {
         let node = Node::new("iq").attr("id", "1").children([Node::new("raw").bytes(vec![0u8, 159, 146, 150])]);
         let value = node_to_json(&node);
         assert_eq!(value["attrs"]["id"], "1");

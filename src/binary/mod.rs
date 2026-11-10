@@ -67,7 +67,7 @@ mod tests {
     use crate::jid::Jid;
 
     #[test]
-    fn roundtrip_preserves_everything() {
+    fn roundtrip_all() {
         let node = Node::new("message")
             .attr("id", "3EB0A1B2C3D4E5F6A7B8C9")
             .attr("to", Jid::phone("5215512345678").with_device(7))
@@ -93,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn text_that_merely_looks_like_a_jid_is_kept_verbatim() {
+    fn jid_like_text_untouched() {
         for text in ["ventas_mx@empresa.com", "soporte@soblend.dev", "a@b@c", "1:300@s.whatsapp.net", "x@c.us"] {
             let node = Node::new("email").text(text.to_owned()).attr("note", text.to_owned());
             let decoded = decode_frame(&encode(&node)).unwrap();
@@ -105,7 +105,7 @@ mod tests {
     }
 
     #[test]
-    fn tokens_are_bijective() {
+    fn tokens_bijective() {
         for (word, token) in TOKEN_INDEX.iter() {
             let back = match *token {
                 Token::Single(i) => single_token(i),

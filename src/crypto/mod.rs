@@ -7,7 +7,7 @@ use hmac::{Hmac, Mac};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
-pub use curve::{sign, signal_key, strip_key_prefix, verify, KeyPair, KEY_TYPE};
+pub use curve::{edwards_public, sign, sign_with, signal_key, strip_key_prefix, verify, KeyPair, KEY_TYPE};
 
 use crate::error::{Error, Result};
 

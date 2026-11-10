@@ -21,12 +21,16 @@ pub enum Event {
     PairSuccess { id: Jid, lid: Option<Jid>, platform: Option<String>, business_name: Option<String> },
     Connected,
     Disconnected { reason: DisconnectReason, reconnecting: bool },
-    LoggedOut { reason: String },
+    LoggedOut { reason: String, cause: LogoutCause, code: Option<u16> },
     AccountBlocked { code: u16, reason: String, expires: Option<u64> },
     OfflineSyncComplete { count: u64 },
     Message(Box<MessageEvent>),
     UndecryptableMessage { info: Box<MessageInfo>, error: String },
     MessageRecovered { id: String, chat: Jid, sender: Jid },
+    MessageLost { id: String, chat: Jid, sender: Jid, error: String, waited: Duration },
+    JoinedGroup { group: Jid, author: Option<Jid>, via: JoinVia },
+    LeftGroup { group: Jid, author: Option<Jid>, removed: bool },
+    LidMapping { phone: Jid, lid: Jid },
     PictureChanged { jid: Jid, author: Option<Jid>, picture_id: Option<String>, removed: bool, timestamp: i64 },
     AboutChanged { jid: Jid, about: String, timestamp: i64 },
     BlocklistChanged { items: Vec<BlocklistChange> },
@@ -43,6 +47,40 @@ pub enum Event {
     ChatUpdate { update: ChatUpdate, timestamp: i64, initial_sync: bool },
     Notification(Node),
     Unhandled(Node),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogoutCause {
+    RemovedFromPhone,
+    SessionInvalidated,
+    UserLogout,
+}
+
+impl LogoutCause {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LogoutCause::RemovedFromPhone => "removedFromPhone",
+            LogoutCause::SessionInvalidated => "sessionInvalidated",
+            LogoutCause::UserLogout => "userLogout",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JoinVia {
+    Created,
+    Added,
+    Invite,
+}
+
+impl JoinVia {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JoinVia::Created => "created",
+            JoinVia::Added => "added",
+            JoinVia::Invite => "invite",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

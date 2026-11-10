@@ -534,7 +534,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_mongo_shaped_zapo_session_decrypts_its_pending_messages() {
+    async fn zapo_mongo_docs_decrypt_pending() {
         let expected: Value =
             serde_json::from_slice(&std::fs::read(fixtures().join("expected.json")).unwrap()).unwrap();
         let snapshot = parse(documents_like_zapo_writes_them(), "bot").unwrap().convert().unwrap();
@@ -593,7 +593,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "set SOBLEND_MONGO_URL to a MongoDB you can write to"]
-    async fn imports_and_rolls_back_a_session_in_a_real_mongodb() {
+    async fn zapo_mongo_live() {
         let url = std::env::var("SOBLEND_MONGO_URL").unwrap();
         let name = format!("soblendwa_zapo_test_{}", crate::crypto::random_u32());
         let client = Client::with_uri_str(&url).await.unwrap();

@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::jid::Jid;
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("websocket error: {0}")]
@@ -59,6 +61,21 @@ pub enum Error {
     #[error("the account is blocked by whatsapp: {0}")]
     AccountBlocked(String),
 
+    #[error("the group {0} needs an admin to approve new members; a join request was sent")]
+    ApprovalRequired(Jid),
+
+    #[error("the profile photo of {0} is private")]
+    PrivatePhoto(Jid),
+
+    #[error("message {0} is not among the recent messages")]
+    MessageNotFound(String),
+
+    #[error("{0} has no WhatsApp devices to send to; check that the number is on WhatsApp")]
+    NoDevices(Jid),
+
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
+
     #[error("{0}")]
     Other(String),
 }
@@ -85,6 +102,75 @@ impl Error {
     pub fn is_timeout(&self) -> bool {
         matches!(self, Error::Timeout)
     }
+
+    pub fn status(&self) -> Option<u16> {
+        match self {
+            Error::Server { code, .. } => Some(*code),
+            _ => None,
+        }
+    }
+
+    pub fn code(&self) -> &'static str {
+        match self {
+            Error::WebSocket(_) => "CONNECTION_FAILED",
+            Error::Io(_) => "IO_ERROR",
+            Error::Http(_) => "HTTP_ERROR",
+            Error::Proto(_) => "PROTOBUF_ERROR",
+            Error::Json(_) => "INVALID_JSON",
+            Error::Binary(_) => "MALFORMED_NODE",
+            Error::Crypto(_) => "CRYPTO_ERROR",
+            Error::Signal(_) => "SIGNAL_ERROR",
+            Error::Handshake(_) => "HANDSHAKE_FAILED",
+            Error::Server { code, .. } => match code {
+                400 => "BAD_REQUEST",
+                401 => "NOT_AUTHORIZED",
+                403 => "FORBIDDEN",
+                404 => "NOT_FOUND",
+                405 => "NOT_ALLOWED",
+                406 => "NOT_ACCEPTABLE",
+                408 => "REQUEST_TIMEOUT",
+                409 => "CONFLICT",
+                410 => "GONE",
+                429 => "RATE_OVERLIMIT",
+                500 => "INTERNAL_SERVER_ERROR",
+                501 => "NOT_IMPLEMENTED",
+                503 => "SERVICE_UNAVAILABLE",
+                _ => "SERVER_ERROR",
+            },
+            Error::Timeout => "TIMEOUT",
+            Error::NotConnected => "NOT_CONNECTED",
+            Error::NotLoggedIn => "NOT_LOGGED_IN",
+            Error::InvalidJid(_) => "INVALID_JID",
+            Error::Media(_) => "MEDIA_ERROR",
+            Error::Store(_) => "STORE_ERROR",
+            Error::MissingAppStateKey(_) => "MISSING_APP_STATE_KEY",
+            Error::RateLimited { .. } => "RATE_LIMITED",
+            Error::AccountBlocked(_) => "ACCOUNT_BLOCKED",
+            Error::ApprovalRequired(_) => "APPROVAL_REQUIRED",
+            Error::PrivatePhoto(_) => "PRIVATE_PHOTO",
+            Error::MessageNotFound(_) => "MESSAGE_NOT_FOUND",
+            Error::NoDevices(_) => "NO_DEVICES",
+            Error::InvalidArgument(_) => "INVALID_ARGUMENT",
+            Error::Other(_) => "OTHER",
+        }
+    }
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_codes() {
+        let server = |code| Error::Server { code, text: String::new() };
+        assert_eq!(server(403).code(), "FORBIDDEN");
+        assert_eq!(server(404).status(), Some(404));
+        assert_eq!(server(499).code(), "SERVER_ERROR");
+        assert_eq!(Error::ApprovalRequired(Jid::group("1")).code(), "APPROVAL_REQUIRED");
+        assert_eq!(Error::PrivatePhoto(Jid::phone("1")).code(), "PRIVATE_PHOTO");
+        assert_eq!(Error::NoDevices(Jid::phone("1")).code(), "NO_DEVICES");
+        assert_eq!(Error::Timeout.status(), None);
+    }
+}

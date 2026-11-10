@@ -193,7 +193,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn token_windows_follow_whatsapp_buckets() {
+    fn token_buckets() {
         assert!(!expired(now_secs()));
         assert!(!expired(now_secs() - 14 * 86_400));
         assert!(expired(now_secs() - 40 * 86_400));
@@ -203,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn bots_and_psa_are_not_regular_users() {
+    fn bots_and_psa() {
         assert!(is_regular_user(&Jid::phone("5215512345678")));
         assert!(!is_regular_user(&Jid::phone("0")));
         assert!(!is_regular_user(&Jid::phone("13135550002")));

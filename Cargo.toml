@@ -1,10 +1,10 @@
 [package]
 name = "soblendwa"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.89"
 authors = ["Soblend Development Studio"]
-description = "SoblendWA: a blazing fast WhatsApp Web multi-device client library written in Rust. Crafted by Soblend Development Studio."
+description = "WhatsApp Web multi-device client in Rust, for bots. By Soblend Development Studio."
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/Soblend-Development-Studio/SoblendWA"
@@ -12,7 +12,7 @@ homepage = "https://github.com/Soblend-Development-Studio/SoblendWA"
 documentation = "https://docs.rs/soblendwa"
 keywords = ["whatsapp", "baileys", "bot", "signal", "multi-device"]
 categories = ["api-bindings", "network-programming", "asynchronous"]
-include = ["/src/**/*", "/examples/**/*", "/tests/fixtures/**/*", "/README.md", "/LICENSE"]
+include = ["/src/**/*", "/examples/**/*", "/tests/fixtures/**/*", "/README.md", "/CHANGELOG.md", "/LICENSE"]
 
 [package.metadata.docs.rs]
 all-features = true

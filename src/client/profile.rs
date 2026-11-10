@@ -92,7 +92,8 @@ impl Client {
             self.server_iq("w:profile:picture", "get").attr("target", jid.to_non_device()).child_node(picture);
         match self.query(request).await {
             Ok(response) => Ok(response.child("picture").and_then(|p| p.attr_string("url"))),
-            Err(Error::Server { code: 401 | 404, .. }) => Ok(None),
+            Err(Error::Server { code: 404, .. }) => Ok(None),
+            Err(Error::Server { code: 401 | 403, .. }) => Err(Error::PrivatePhoto(jid.to_non_device())),
             Err(err) => Err(err),
         }
     }

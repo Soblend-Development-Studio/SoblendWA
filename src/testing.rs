@@ -44,7 +44,19 @@ struct Group {
     creator: Jid,
     created: i64,
     members: Vec<Jid>,
+    admins: HashSet<Jid>,
+    approval: bool,
+    invite: String,
+    pending: Vec<Jid>,
 }
+
+impl Group {
+    fn is_admin(&self, user: &Jid) -> bool {
+        *user == self.creator || self.admins.contains(user)
+    }
+}
+
+type Refusal = (u16, &'static str);
 
 #[derive(Default)]
 struct World {
@@ -338,8 +350,8 @@ impl Shared {
                 .attr("ttl", "3600")
                 .child_node(Node::new("host").attr("hostname", "fake.media"))]),
             "w:g2" => match self.groups_iq(from, iq, kind) {
-                Some(children) => result(children),
-                None => error_iq(&id, 404, "item-not-found"),
+                Ok(children) => result(children),
+                Err((code, text)) => error_iq(&id, code, text),
             },
             _ => error_iq(&id, 501, "feature-not-implemented"),
         }
@@ -436,7 +448,7 @@ impl Shared {
     }
 
     fn group_node(jid: &Jid, group: &Group) -> Node {
-        Node::new("group")
+        let mut node = Node::new("group")
             .attr("id", jid.user.clone())
             .attr("subject", group.subject.clone())
             .attr("creation", group.created)
@@ -446,20 +458,181 @@ impl Shared {
                 let participant = Node::new("participant").attr("jid", member);
                 if *member == group.creator {
                     participant.attr("type", "superadmin")
+                } else if group.admins.contains(member) {
+                    participant.attr("type", "admin")
                 } else {
                     participant
                 }
-            }))
+            }));
+        if group.approval {
+            node.push_child(
+                Node::new("membership_approval_mode").child_node(Node::new("group_join").attr("state", "on")),
+            );
+        }
+        node
     }
 
-    fn groups_iq(&self, from: &Jid, iq: &Node, kind: &str) -> Option<Vec<Node>> {
+    fn post(world: &mut World, device: &Jid, node: Node) {
+        match world.online.get(device) {
+            Some(link) => {
+                let _ = link.send(Control::Node(node));
+            }
+            None => world.mailbox.entry(device.clone()).or_default().push(node),
+        }
+    }
+
+    fn notify_group(&self, world: &mut World, group: &Jid, author: &Jid, child: Node, extra: &[Jid]) {
+        let id = format!("fake-notification-{}", self.counter.fetch_add(1, Ordering::Relaxed));
+        let node = Node::new("notification")
+            .attr("from", group)
+            .attr("type", "w:gp2")
+            .attr("id", id)
+            .attr("participant", author)
+            .attr("t", now_secs())
+            .child_node(child);
+        let mut audience = world.groups.get(group).map(|g| g.members.clone()).unwrap_or_default();
+        for user in extra {
+            if !audience.contains(user) {
+                audience.push(user.clone());
+            }
+        }
+        for user in audience {
+            for device in world.devices.get(&user).cloned().unwrap_or_default() {
+                Self::post(world, &user.with_device(device), node.clone());
+            }
+        }
+    }
+
+    fn participants_node(tag: &str, users: &[Jid]) -> Node {
+        Node::new(tag.to_owned()).children(users.iter().map(|user| Node::new("participant").attr("jid", user)))
+    }
+
+    fn change_members(&self, group: &Jid, by: &Jid, tag: &str, users: &[Jid]) -> Result<Node, Refusal> {
+        let mut world = self.world.lock();
+        let entry = world.groups.get_mut(group).ok_or((404, "item-not-found"))?;
+        if !entry.is_admin(by) {
+            return Err((403, "forbidden"));
+        }
+        let mut results = Vec::new();
+        let mut changed = Vec::new();
+        for user in users {
+            let user = user.to_non_device();
+            let member = entry.members.contains(&user);
+            let status = match tag {
+                "add" if member => 409,
+                "add" => {
+                    entry.members.push(user.clone());
+                    200
+                }
+                _ if !member => 404,
+                "remove" => {
+                    entry.members.retain(|m| *m != user);
+                    entry.admins.remove(&user);
+                    200
+                }
+                "promote" => {
+                    entry.admins.insert(user.clone());
+                    200
+                }
+                "demote" => {
+                    entry.admins.remove(&user);
+                    200
+                }
+                _ => 400,
+            };
+            let participant = Node::new("participant").attr("jid", &user);
+            results.push(if status == 200 { participant } else { participant.attr("error", status.to_string()) });
+            if status == 200 {
+                changed.push(user);
+            }
+        }
+        if !changed.is_empty() {
+            let extra = if tag == "remove" { changed.clone() } else { Vec::new() };
+            self.notify_group(&mut world, group, by, Self::participants_node(tag, &changed), &extra);
+        }
+        Ok(Node::new(tag.to_owned()).children(results))
+    }
+
+    fn join_with_code(&self, user: &Jid, code: &str) -> Result<Vec<Node>, Refusal> {
+        let mut world = self.world.lock();
+        let (jid, group) = world.groups.iter_mut().find(|(_, g)| g.invite == code).ok_or((404, "item-not-found"))?;
+        let jid = jid.clone();
+        if group.members.contains(user) {
+            return Err((409, "conflict"));
+        }
+        if group.approval {
+            if !group.pending.contains(user) {
+                group.pending.push(user.clone());
+            }
+            return Ok(vec![Node::new("membership_approval_request").attr("jid", &jid)]);
+        }
+        group.members.push(user.clone());
+        let child = Self::participants_node("add", std::slice::from_ref(user)).attr("reason", "invite");
+        self.notify_group(&mut world, &jid, user, child, &[]);
+        Ok(vec![Node::new("group").attr("jid", &jid)])
+    }
+
+    fn groups_iq(&self, from: &Jid, iq: &Node, kind: &str) -> Result<Vec<Node>, Refusal> {
+        const MISSING: Refusal = (404, "item-not-found");
         let me = from.to_non_device();
+        let to = iq.attr_jid("to").ok_or((400, "bad-request"))?;
+        let body = iq.first_child().ok_or((400, "bad-request"))?;
         if kind == "set" {
-            let create = iq.child("create")?;
-            let members = create.children_by("participant").filter_map(|p| p.attr_jid("jid")).collect::<Vec<_>>();
-            let jid = self.new_group(create.attr_string("subject").unwrap_or_default(), me, members);
-            let world = self.world.lock();
-            return Some(vec![Self::group_node(&jid, world.groups.get(&jid)?)]);
+            if let Some(create) = iq.child("create") {
+                let members = create.children_by("participant").filter_map(|p| p.attr_jid("jid")).collect::<Vec<_>>();
+                let jid = self.new_group(create.attr_string("subject").unwrap_or_default(), me, members);
+                let world = self.world.lock();
+                return Ok(vec![Self::group_node(&jid, world.groups.get(&jid).ok_or(MISSING)?)]);
+            }
+            if to.is_server() {
+                return match body.tag.as_ref() {
+                    "invite" => self.join_with_code(&me, &body.attr_string("code").unwrap_or_default()),
+                    "leave" => {
+                        let mut world = self.world.lock();
+                        for group in body.children_by("group").filter_map(|g| g.attr_jid("id")) {
+                            let child = Self::participants_node("leave", std::slice::from_ref(&me));
+                            self.notify_group(&mut world, &group, &me, child, std::slice::from_ref(&me));
+                            if let Some(entry) = world.groups.get_mut(&group) {
+                                entry.members.retain(|m| *m != me);
+                                entry.admins.remove(&me);
+                            }
+                        }
+                        Ok(Vec::new())
+                    }
+                    _ => Err(MISSING),
+                };
+            }
+            return match body.tag.as_ref() {
+                tag @ ("add" | "remove" | "promote" | "demote") => {
+                    let users = body.children_by("participant").filter_map(|p| p.attr_jid("jid")).collect::<Vec<_>>();
+                    Ok(vec![self.change_members(&to, &me, tag, &users)?])
+                }
+                "subject" => {
+                    let mut world = self.world.lock();
+                    let subject = body.content_string().unwrap_or_default();
+                    let entry = world.groups.get_mut(&to).ok_or(MISSING)?;
+                    entry.subject = subject.clone();
+                    let child = Node::new("subject").attr("subject", subject);
+                    self.notify_group(&mut world, &to, &me, child, &[]);
+                    Ok(Vec::new())
+                }
+                "invite" => {
+                    let mut world = self.world.lock();
+                    let serial = self.counter.fetch_add(1, Ordering::Relaxed);
+                    let entry = world.groups.get_mut(&to).ok_or(MISSING)?;
+                    entry.invite = format!("FAKEINVITE{serial}");
+                    Ok(vec![Node::new("invite").attr("code", entry.invite.clone())])
+                }
+                "membership_approval_mode" => {
+                    let on = body.child("group_join").is_some_and(|g| g.attr_is("state", "on"));
+                    self.world.lock().groups.get_mut(&to).ok_or(MISSING)?.approval = on;
+                    Ok(Vec::new())
+                }
+                _ => {
+                    self.world.lock().groups.get(&to).ok_or(MISSING)?;
+                    Ok(Vec::new())
+                }
+            };
         }
         let world = self.world.lock();
         if iq.child("participating").is_some() {
@@ -468,10 +641,17 @@ impl Shared {
                 .iter()
                 .filter(|(_, group)| group.members.contains(&me))
                 .map(|(jid, group)| Self::group_node(jid, group));
-            return Some(vec![Node::new("groups").children(groups)]);
+            return Ok(vec![Node::new("groups").children(groups)]);
         }
-        let jid = iq.attr_jid("to")?;
-        world.groups.get(&jid).map(|group| vec![Self::group_node(&jid, group)])
+        if body.tag.as_ref() == "invite" {
+            if let Some(code) = body.attr_string("code") {
+                let (jid, group) = world.groups.iter().find(|(_, g)| g.invite == code).ok_or(MISSING)?;
+                return Ok(vec![Self::group_node(jid, group)]);
+            }
+            let group = world.groups.get(&to).ok_or(MISSING)?;
+            return Ok(vec![Node::new("invite").attr("code", group.invite.clone())]);
+        }
+        world.groups.get(&to).map(|group| vec![Self::group_node(&to, group)]).ok_or(MISSING)
     }
 
     fn new_group(&self, subject: String, creator: Jid, members: Vec<Jid>) -> Jid {
@@ -479,8 +659,20 @@ impl Shared {
         let jid = Jid::new(format!("120363{serial:012}"), GROUP_SERVER);
         let mut all = vec![creator.clone()];
         all.extend(members.into_iter().map(|m| m.to_non_device()).filter(|m| *m != creator));
-        let group = Group { subject, creator, created: now_secs(), members: all };
-        self.world.lock().groups.insert(jid.clone(), group);
+        let group = Group {
+            subject,
+            creator: creator.clone(),
+            created: now_secs(),
+            members: all,
+            admins: HashSet::new(),
+            approval: false,
+            invite: format!("FAKEINVITE{serial}"),
+            pending: Vec::new(),
+        };
+        let mut world = self.world.lock();
+        let node = Self::group_node(&jid, &group);
+        world.groups.insert(jid.clone(), group);
+        self.notify_group(&mut world, &jid, &creator, Node::new("create").child_node(node), &[]);
         jid
     }
 
@@ -695,6 +887,26 @@ impl FakeWhatsApp {
         Ok((client, events))
     }
 
+    pub fn add_to_group(&self, group: &Jid, by: &str, phones: &[&str]) {
+        let users: Vec<Jid> = phones.iter().map(|p| Jid::phone(p)).collect();
+        let _ = self.shared.change_members(group, &Jid::phone(by), "add", &users);
+    }
+
+    pub fn remove_from_group(&self, group: &Jid, by: &str, phones: &[&str]) {
+        let users: Vec<Jid> = phones.iter().map(|p| Jid::phone(p)).collect();
+        let _ = self.shared.change_members(group, &Jid::phone(by), "remove", &users);
+    }
+
+    pub fn invite_code(&self, group: &Jid) -> Option<String> {
+        self.shared.world.lock().groups.get(group).map(|g| g.invite.clone())
+    }
+
+    pub fn set_join_approval(&self, group: &Jid, enabled: bool) {
+        if let Some(entry) = self.shared.world.lock().groups.get_mut(group) {
+            entry.approval = enabled;
+        }
+    }
+
     pub fn create_group(&self, subject: &str, creator: &str, members: &[&str]) -> Jid {
         let members = members.iter().map(|m| Jid::phone(m)).collect();
         self.shared.new_group(subject.to_owned(), Jid::phone(creator), members)
@@ -808,7 +1020,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn two_accounts_talk_end_to_end_through_the_fake_server() {
+    async fn two_accounts_chat() {
         let fake = FakeWhatsApp::start().await.unwrap();
         let (bot, mut bot_events) = fake.connect(BOT).await.unwrap();
         let (ana, mut ana_events) = fake.connect(ANA).await.unwrap();
@@ -836,7 +1048,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn groups_fan_out_with_sender_keys() {
+    async fn group_fanout() {
         let fake = FakeWhatsApp::start().await.unwrap();
         let (bot, mut bot_events) = fake.connect(BOT).await.unwrap();
         let (ana, mut ana_events) = fake.connect(ANA).await.unwrap();
@@ -858,7 +1070,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_dropped_session_reconnects_and_flushes_its_outbox() {
+    async fn reconnect_flushes_outbox() {
         let fake = FakeWhatsApp::start().await.unwrap();
         let (bot, mut bot_events) = fake.connect(BOT).await.unwrap();
         let (ana, mut ana_events) = fake.connect(ANA).await.unwrap();
@@ -906,7 +1118,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_corrupted_message_is_recovered_through_a_retry() {
+    async fn corrupted_message_retry() {
         let fake = FakeWhatsApp::start().await.unwrap();
         let (bot, mut bot_events) = fake.connect(BOT).await.unwrap();
         let (ana, _ana_events) = fake.connect(ANA).await.unwrap();
@@ -929,7 +1141,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_group_message_without_its_sender_key_is_recovered() {
+    async fn missing_sender_key() {
         let fake = FakeWhatsApp::start().await.unwrap();
         let (bot, mut bot_events) = fake.connect(BOT).await.unwrap();
         let (ana, _ana_events) = fake.connect(ANA).await.unwrap();
@@ -951,7 +1163,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unconfirmed_sends_are_resent_only_after_a_real_drop_and_never_delivered_twice() {
+    async fn outbox_resend_after_drop() {
         let fake = FakeWhatsApp::start().await.unwrap();
         let (bot, mut bot_events) = fake.connect(BOT).await.unwrap();
         let (ana, mut ana_events) = fake.connect(ANA).await.unwrap();
@@ -990,7 +1202,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_login_from_a_dead_connection_does_not_touch_the_new_one() {
+    async fn stale_login_ignored() {
         let fake = FakeWhatsApp::start().await.unwrap();
         let (bot, mut bot_events) = fake.connect(BOT).await.unwrap();
         let stale = bot.current_generation();
@@ -1074,7 +1286,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn links_get_a_rich_preview_automatically_and_it_is_reused() {
+    async fn link_preview_auto() {
         let fake = FakeWhatsApp::start().await.unwrap();
         let site = website().await;
         let (bot, _bot_events) = bot_with_previews(&fake, local_previews()).await;
@@ -1110,7 +1322,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn private_links_are_never_fetched_unless_allowed() {
+    async fn private_links_blocked() {
         let fake = FakeWhatsApp::start().await.unwrap();
         let site = website().await;
         let (bot, _bot_events) = bot_with_previews(&fake, crate::LinkPreviewConfig::default()).await;
@@ -1123,7 +1335,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn each_message_can_turn_the_preview_off_or_write_its_own() {
+    async fn preview_off_or_custom() {
         let fake = FakeWhatsApp::start().await.unwrap();
         let site = website().await;
         let (bot, _bot_events) = bot_with_previews(&fake, local_previews()).await;
@@ -1171,7 +1383,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn media_travels_end_to_end_and_repeats_are_not_uploaded_again() {
+    async fn media_end_to_end() {
         let fake = FakeWhatsApp::start().await.unwrap();
         let (bot, _bot_events) = fake.connect(BOT).await.unwrap();
         let (ana, mut ana_events) = fake.connect(ANA).await.unwrap();
@@ -1207,7 +1419,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_retry_that_arrives_after_a_restart_is_still_answered() {
+    async fn retry_after_restart() {
         let fake = FakeWhatsApp::start().await.unwrap();
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
         store.save_creds(&fake.account(BOT)).await.unwrap();
@@ -1239,7 +1451,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wrapped_messages_are_read_through_every_wrapper() {
+    async fn unwrap_nested() {
         use crate::proto::{FutureProofMessage, Message};
         let wrap = |message: Message| Some(Box::new(FutureProofMessage { message: Some(Box::new(message)) }));
         let fake = FakeWhatsApp::start().await.unwrap();
@@ -1259,7 +1471,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn account_notifications_become_typed_events() {
+    async fn account_notifications() {
         use crate::events::BlocklistChange;
         let fake = FakeWhatsApp::start().await.unwrap();
         let (_bot, mut events) = fake.connect(BOT).await.unwrap();
@@ -1314,7 +1526,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_locked_account_stops_reconnecting_and_keeps_its_session() {
+    async fn blocked_account_keeps_session() {
         let fake = FakeWhatsApp::start().await.unwrap();
         let (bot, mut bot_events) = fake.connect(BOT).await.unwrap();
         fake.block(BOT, 403);
@@ -1338,7 +1550,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_runaway_loop_cannot_flood_a_chat() {
+    async fn per_chat_limit() {
         let fake = FakeWhatsApp::start().await.unwrap();
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
         store.save_creds(&fake.account(BOT)).await.unwrap();
@@ -1356,5 +1568,240 @@ mod tests {
         for round in 0..3 {
             assert_eq!(next_text(&mut ana_events).await.text(), Some(format!("spam {round}").as_str()));
         }
+    }
+
+    async fn quiet_for(events: &mut EventStream, wait: Duration, mut unwanted: impl FnMut(&Event) -> bool) {
+        let deadline = tokio::time::Instant::now() + wait;
+        while let Ok(Some(event)) = tokio::time::timeout_at(deadline, events.recv()).await {
+            assert!(!unwanted(&event), "unexpected event {event:?}");
+        }
+    }
+
+    async fn joined(events: &mut EventStream) -> (Jid, Option<Jid>, crate::events::JoinVia) {
+        next_event(events, |event| match event {
+            Event::JoinedGroup { group, author, via } => Some((group, author, via)),
+            _ => None,
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn join_and_leave_events() {
+        use crate::events::JoinVia;
+        use crate::ParticipantAction;
+
+        let fake = FakeWhatsApp::start().await.unwrap();
+        let (bot, mut bot_events) = fake.connect(BOT).await.unwrap();
+        let (ana, _ana_events) = fake.connect(ANA).await.unwrap();
+        let (bot_jid, ana_jid) = (Jid::phone(BOT), Jid::phone(ANA));
+
+        let created = ana.create_group("Equipo", std::slice::from_ref(&bot_jid)).await.unwrap();
+        let (group, author, via) = joined(&mut bot_events).await;
+        assert_eq!((group, author, via), (created.jid.clone(), Some(ana_jid.clone()), JoinVia::Created));
+
+        let later = ana.create_group("Sin el bot", &[]).await.unwrap();
+        let results =
+            ana.update_participants(&later.jid, std::slice::from_ref(&bot_jid), ParticipantAction::Add).await.unwrap();
+        assert_eq!(results.first().map(|r| r.status), Some(200));
+        let (group, author, via) = joined(&mut bot_events).await;
+        assert_eq!((group, author, via), (later.jid.clone(), Some(ana_jid.clone()), JoinVia::Added));
+
+        let open = ana.create_group("Con enlace", &[]).await.unwrap();
+        let code = ana.group_invite_code(&open.jid).await.unwrap();
+        assert_eq!(bot.join_group(&format!("https://chat.whatsapp.com/{code}")).await.unwrap(), open.jid);
+        let (group, _, via) = joined(&mut bot_events).await;
+        assert_eq!((group, via), (open.jid.clone(), JoinVia::Invite));
+        quiet_for(&mut bot_events, Duration::from_millis(400), |event| matches!(event, Event::JoinedGroup { .. }))
+            .await;
+
+        let gated = ana.create_group("Con aprobación", &[]).await.unwrap();
+        ana.set_group_join_approval(&gated.jid, true).await.unwrap();
+        let code = ana.group_invite_code(&gated.jid).await.unwrap();
+        let refused = bot.join_group(&code).await.unwrap_err();
+        assert!(matches!(&refused, Error::ApprovalRequired(group) if *group == gated.jid), "{refused:?}");
+        assert_eq!(refused.code(), "APPROVAL_REQUIRED");
+
+        let not_admin =
+            bot.update_participants(&created.jid, std::slice::from_ref(&bot_jid), ParticipantAction::Promote).await;
+        assert_eq!(not_admin.unwrap_err().code(), "FORBIDDEN");
+
+        ana.update_participants(&later.jid, std::slice::from_ref(&bot_jid), ParticipantAction::Remove).await.unwrap();
+        let (group, author, removed) = next_event(&mut bot_events, |event| match event {
+            Event::LeftGroup { group, author, removed } => Some((group, author, removed)),
+            _ => None,
+        })
+        .await;
+        assert_eq!((group, author, removed), (later.jid, Some(ana_jid), true));
+
+        bot.leave_group(&created.jid).await.unwrap();
+        let removed = next_event(&mut bot_events, |event| match event {
+            Event::LeftGroup { group, removed, .. } if group == created.jid => Some(removed),
+            _ => None,
+        })
+        .await;
+        assert!(!removed, "leaving on our own is not a removal");
+    }
+
+    #[tokio::test]
+    async fn lost_message_counted_then_recovered() {
+        let fake = FakeWhatsApp::start().await.unwrap();
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        store.save_creds(&fake.account(BOT)).await.unwrap();
+        let builder = fake.builder().store(store).retry_deadline(Duration::from_millis(300));
+        let (bot, mut bot_events) = fake.connect_with(builder).await.unwrap();
+        let (ana, _ana_events) = fake.connect(ANA).await.unwrap();
+
+        fake.refuse_connections(BOT, true);
+        fake.corrupt_next(BOT, 1);
+        let id = ana.send_text(&Jid::phone(BOT), "¿llegó?").await.unwrap();
+        fake.refuse_connections(ANA, true);
+        fake.refuse_connections(BOT, false);
+
+        let lost = next_event(&mut bot_events, |event| match event {
+            Event::MessageLost { id, error, .. } => Some((id, error)),
+            _ => None,
+        })
+        .await;
+        assert_eq!(lost.0, id);
+        assert!(!lost.1.is_empty());
+        assert_eq!((bot.stats().lost, bot.stats().awaiting_recovery), (1, 0));
+
+        fake.refuse_connections(ANA, false);
+        let recovered = next_event(&mut bot_events, |event| match event {
+            Event::MessageRecovered { id, .. } => Some(id),
+            _ => None,
+        })
+        .await;
+        assert_eq!(recovered, id);
+        let stats = bot.stats();
+        assert_eq!((stats.lost, stats.recovered), (0, 1), "a late arrival is no longer counted as lost");
+    }
+
+    #[tokio::test]
+    async fn shared_media_store() {
+        let fake = FakeWhatsApp::start().await.unwrap();
+        let shared: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        let mut bots = Vec::new();
+        for phone in [BOT, CARLOS] {
+            let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+            store.save_creds(&fake.account(phone)).await.unwrap();
+            bots.push(fake.connect_with(fake.builder().store(store).media_store(shared.clone())).await.unwrap());
+        }
+        let (ana, mut ana_events) = fake.connect(ANA).await.unwrap();
+        let picture = cover_png();
+
+        bots[0].0.send_image(&Jid::phone(ANA), &picture, Some("del bot")).await.unwrap();
+        let first = next_media(&mut ana_events).await;
+        assert_eq!(fake.media_uploads(), 1);
+
+        bots[1].0.send_image(&Jid::phone(ANA), &picture, Some("de otro bot")).await.unwrap();
+        let second = next_media(&mut ana_events).await;
+        assert_eq!(fake.media_uploads(), 1, "the second account must reuse the first one's upload");
+        assert_eq!(bots[1].0.stats().media_reused, 1);
+        assert_eq!(ana.download_message(&first.message).await.unwrap(), picture);
+        assert_eq!(ana.download_message(&second.message).await.unwrap(), picture);
+
+        let summary = bots[0].0.stats().send_timings;
+        assert!(summary.samples >= 1);
+        assert!(summary.total.max >= summary.total.p50 && summary.upload.is_some());
+    }
+
+    #[tokio::test]
+    async fn stale_empty_device_list() {
+        let fake = FakeWhatsApp::start().await.unwrap();
+        let (bot, mut bot_events) = fake.connect(BOT).await.unwrap();
+        let refused = bot.send_text(&Jid::phone(ANA), "todavía no").await.unwrap_err();
+        assert_eq!(refused.code(), "NO_DEVICES", "{refused}");
+
+        let (ana, mut ana_events) = fake.connect(ANA).await.unwrap();
+        let cached = bot.send_text(&Jid::phone(ANA), "sigue sin saber").await.unwrap_err();
+        assert_eq!(cached.code(), "NO_DEVICES", "the empty list is still cached, so this one fails too");
+
+        ana.send_text(&Jid::phone(BOT), "ya estoy").await.unwrap();
+        next_text(&mut bot_events).await;
+        bot.send_text(&Jid::phone(ANA), "ahora sí").await.unwrap();
+        assert_eq!(next_text(&mut ana_events).await.text(), Some("ahora sí"));
+    }
+
+    #[tokio::test]
+    async fn device_removed() {
+        use crate::events::LogoutCause;
+
+        let fake = FakeWhatsApp::start().await.unwrap();
+        let (_bot, mut bot_events) = fake.connect(BOT).await.unwrap();
+        let removal = Node::new("stream:error")
+            .attr("code", "401")
+            .child_node(Node::new("conflict").attr("type", "device_removed"));
+        fake.push_node(BOT, removal);
+        let (cause, code) = next_event(&mut bot_events, |event| match event {
+            Event::LoggedOut { cause, code, .. } => Some((cause, code)),
+            _ => None,
+        })
+        .await;
+        assert_eq!((cause, code), (LogoutCause::RemovedFromPhone, Some(401)));
+    }
+
+    fn per_call(rounds: u32, mut work: impl FnMut()) -> Duration {
+        let started = std::time::Instant::now();
+        for _ in 0..rounds {
+            work();
+        }
+        started.elapsed() / rounds
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore]
+    async fn pipeline() {
+        let fake = FakeWhatsApp::start().await.unwrap();
+        let account = |phone: &str| {
+            let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+            let creds = fake.account(phone);
+            let builder = fake.builder().send_limit(None);
+            async move {
+                store.save_creds(&creds).await.unwrap();
+                builder.store(store)
+            }
+        };
+        let (_bot, mut bot_events) = fake.connect_with(account(BOT).await).await.unwrap();
+        let (ana, mut ana_events) = fake.connect_with(account(ANA).await).await.unwrap();
+        tokio::spawn(async move { while ana_events.recv().await.is_some() {} });
+        ana.send_text(&Jid::phone(BOT), "hola").await.unwrap();
+        next_text(&mut bot_events).await;
+
+        let total = 5_000;
+        let started = std::time::Instant::now();
+        let sends: Vec<_> = (0..total)
+            .map(|i| {
+                let ana = ana.clone();
+                tokio::spawn(async move { ana.send_text(&Jid::phone(BOT), format!("mensaje {i}")).await.unwrap() })
+            })
+            .collect();
+        let mut last = None;
+        let mut got = 0;
+        while got < total {
+            if let Some(Event::Message(message)) = bot_events.recv().await {
+                std::hint::black_box(message.to_json());
+                got += 1;
+                last = Some(message);
+            }
+        }
+        let elapsed = started.elapsed();
+        for send in sends {
+            send.await.unwrap();
+        }
+        println!(
+            "BENCH pipeline: {:.0} msg/s, {:.1} µs per message on one thread",
+            total as f64 / elapsed.as_secs_f64(),
+            elapsed.as_secs_f64() * 1e6 / total as f64
+        );
+
+        let event = Event::Message(last.unwrap());
+        let value = per_call(20_000, || drop(std::hint::black_box(event.to_json().to_string())));
+        let text = per_call(20_000, || drop(std::hint::black_box(event.to_json_string())));
+        println!("BENCH message event as JSON text: through Value {value:?}, written directly {text:?}");
+        let stats = per_call(20_000, || {
+            std::hint::black_box(ana.stats());
+        });
+        println!("BENCH stats(): {stats:?}");
     }
 }

@@ -425,7 +425,7 @@ mod tests {
     };
 
     #[test]
-    fn native_flow_messages_survive_the_wire() {
+    fn native_flow() {
         let message = Interactive::new("¿Qué quieres hacer?")
             .title("Soblend")
             .footer("SoblendWA")
@@ -447,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn classic_buttons_lists_and_templates_tag_the_stanza() {
+    fn legacy_buttons_biz_tag() {
         let buttons = Message::legacy_buttons("Elige", Some("pie"), [("a", "Opción A"), ("b", "Opción B")]);
         assert_eq!(buttons.buttons_message.as_ref().unwrap().buttons.len(), 2);
         assert!(biz_node(&buttons).unwrap().child("buttons").is_some());
@@ -478,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn replies_expose_the_selected_id() {
+    fn selected_reply() {
         let tapped = Message {
             buttons_response_message: Some(Box::new(ButtonsResponseMessage {
                 selected_button_id: Some("a".into()),

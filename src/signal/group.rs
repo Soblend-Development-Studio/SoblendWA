@@ -18,6 +18,7 @@ struct SenderKeyState {
     signing_public: [u8; 32],
     signing_private: Option<[u8; 32]>,
     skipped: Vec<(u32, [u8; 32])>,
+    edwards: Option<[u8; 32]>,
 }
 
 impl SenderKeyState {
@@ -81,6 +82,7 @@ impl SenderKeyRecord {
                 chain_key: crypto::random_array(),
                 signing_public: signing.public,
                 signing_private: Some(signing.private),
+                edwards: None,
                 skipped: Vec::new(),
             }],
         }
@@ -116,6 +118,7 @@ impl SenderKeyRecord {
                 .ok_or_else(|| Error::signal("invalid sender chain key"))?,
             signing_public: strip_key_prefix(body.signing_key.as_deref().unwrap_or_default())?,
             signing_private: None,
+            edwards: None,
             skipped: Vec::new(),
         };
         if let Some(existing) = self.states.iter().find(|s| s.key_id == key_id) {
@@ -142,7 +145,8 @@ impl SenderKeyRecord {
         let mut out = Vec::with_capacity(1 + body.encoded_len() + SIGNATURE_LEN);
         out.push(VERSION_BYTE);
         body.encode(&mut out).expect("vec has capacity");
-        let signature = crypto::sign(&signing_private, &out);
+        let edwards = *state.edwards.get_or_insert_with(|| crypto::edwards_public(&signing_private));
+        let signature = crypto::sign_with(&signing_private, &edwards, &out);
         out.extend_from_slice(&signature);
         Ok(out)
     }
@@ -218,6 +222,7 @@ impl SenderKeyRecord {
                     .filter(|p| !p.is_empty())
                     .map(|p| fixed(Some(p), "signing private key"))
                     .transpose()?,
+                edwards: None,
                 skipped: state
                     .sender_message_keys
                     .iter()
@@ -298,6 +303,7 @@ impl SenderKeyRecord {
                 chain_key: key(&chain["seed"])?,
                 signing_public: key(&signing["public"])?,
                 signing_private: signing.get("private").filter(|p| !p.is_null()).map(key).transpose()?,
+                edwards: None,
                 skipped,
             });
         }
@@ -319,6 +325,7 @@ impl SenderKeyRecord {
                     chain_key: fixed(&s.chain_key)?,
                     signing_public: fixed(&s.signing_public)?,
                     signing_private: s.signing_private.as_deref().map(fixed).transpose()?,
+                    edwards: None,
                     skipped: s.message_keys.iter().map(|k| Ok((k.index, fixed(&k.key)?))).collect::<Result<_>>()?,
                 })
             })

@@ -49,11 +49,18 @@ impl KeyPair {
     }
 }
 
+pub fn edwards_public(private: &[u8; 32]) -> [u8; 32] {
+    EdwardsPoint::mul_base(&Scalar::from_bytes_mod_order(*private)).compress().to_bytes()
+}
+
 pub fn sign(private: &[u8; 32], message: &[u8]) -> [u8; 64] {
+    sign_with(private, &edwards_public(private), message)
+}
+
+pub fn sign_with(private: &[u8; 32], edwards: &[u8; 32], message: &[u8]) -> [u8; 64] {
     let nonce: [u8; 64] = super::random_array();
     let a = Scalar::from_bytes_mod_order(*private);
-    let public_point = EdwardsPoint::mul_base(&a).compress();
-    let sign_bit = public_point.as_bytes()[31] & 0x80;
+    let sign_bit = edwards[31] & 0x80;
 
     let mut prefix = [0xffu8; 32];
     prefix[0] = 0xfe;
@@ -61,9 +68,7 @@ pub fn sign(private: &[u8; 32], message: &[u8]) -> [u8; 64] {
         Sha512::new().chain_update(prefix).chain_update(private).chain_update(message).chain_update(nonce),
     );
     let cap_r = EdwardsPoint::mul_base(&r).compress();
-    let h = Scalar::from_hash(
-        Sha512::new().chain_update(cap_r.as_bytes()).chain_update(public_point.as_bytes()).chain_update(message),
-    );
+    let h = Scalar::from_hash(Sha512::new().chain_update(cap_r.as_bytes()).chain_update(edwards).chain_update(message));
     let s = h * a + r;
 
     let mut signature = [0u8; 64];
@@ -115,7 +120,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn agreement_is_symmetric() {
+    fn agreement() {
         let alice = KeyPair::generate();
         let bob = KeyPair::generate();
         assert_eq!(alice.shared_secret(&bob.public), bob.shared_secret(&alice.public));

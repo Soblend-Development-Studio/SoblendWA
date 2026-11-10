@@ -794,6 +794,7 @@ fn state_to_proto(state: &SessionState) -> StoredSessionState {
         registration_id: state.registration_id,
         root_key: state.root_key.to_vec(),
         our_ratchet_private: state.our_ratchet.private.to_vec(),
+        our_ratchet_public: state.our_ratchet.public.to_vec(),
         their_ratchet: state.their_ratchet.to_vec(),
         previous_counter: state.previous_counter,
         sending: state.sending.as_ref().map(chain_to_proto),
@@ -809,10 +810,15 @@ fn state_to_proto(state: &SessionState) -> StoredSessionState {
 }
 
 fn state_from_proto(stored: StoredSessionState) -> Result<SessionState> {
+    let private = array32(&stored.our_ratchet_private)?;
+    let our_ratchet = match stored.our_ratchet_public.as_slice().try_into() {
+        Ok(public) => KeyPair { public, private },
+        Err(_) => KeyPair::from_private(private),
+    };
     Ok(SessionState {
         registration_id: stored.registration_id,
         root_key: array32(&stored.root_key)?,
-        our_ratchet: KeyPair::from_private(array32(&stored.our_ratchet_private)?),
+        our_ratchet,
         their_ratchet: array32(&stored.their_ratchet)?,
         previous_counter: stored.previous_counter,
         sending: stored.sending.map(chain_from_proto).transpose()?,

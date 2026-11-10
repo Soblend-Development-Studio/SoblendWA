@@ -228,6 +228,46 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(any(feature = "mongo", feature = "postgres", feature = "redis"))]
+    pub(crate) async fn against_a_server<S, F, Fut>(open: F)
+    where
+        S: Store,
+        F: Fn(String) -> Fut,
+        Fut: std::future::Future<Output = S>,
+    {
+        let tag = crate::crypto::random_u32();
+        let (bot, other) = (format!("soblendwa_test_{tag}"), format!("soblendwa_test_{tag}_otro"));
+        let store = open(bot.clone()).await;
+        exercise(&store).await;
+
+        let neighbour = open(other.clone()).await;
+        store.set(KeyKind::Session, "5215500000000.0", vec![7; 64]).await.unwrap();
+        neighbour.set(KeyKind::Session, "5215500000000.0", vec![9]).await.unwrap();
+        for i in 0..2_000u32 {
+            store.set(KeyKind::PreKey, &i.to_string(), i.to_be_bytes().repeat(8)).await.unwrap();
+        }
+        store.set(KeyKind::SenderKey, "grande", vec![3; 2 * 1024 * 1024]).await.unwrap();
+        store.save_creds(&Creds::generate()).await.unwrap();
+        store.flush().await.unwrap();
+        neighbour.flush().await.unwrap();
+
+        let reopened = open(bot).await;
+        assert!(reopened.load_creds().await.unwrap().is_some());
+        assert_eq!(reopened.get(KeyKind::Session, "5215500000000.0").await.unwrap(), Some(vec![7; 64]));
+        assert_eq!(reopened.keys(KeyKind::PreKey).await.unwrap().len(), 2_000);
+        assert_eq!(reopened.get(KeyKind::PreKey, "1999").await.unwrap(), Some(1999u32.to_be_bytes().repeat(8)));
+        assert_eq!(reopened.get(KeyKind::SenderKey, "grande").await.unwrap().map(|v| v.len()), Some(2 * 1024 * 1024));
+        let isolated = open(other).await;
+        assert!(isolated.load_creds().await.unwrap().is_none());
+        assert_eq!(isolated.get(KeyKind::Session, "5215500000000.0").await.unwrap(), Some(vec![9]));
+
+        for store in [&reopened, &isolated] {
+            store.clear().await.unwrap();
+            store.flush().await.unwrap();
+        }
+        assert!(open(format!("soblendwa_test_{tag}")).await.keys(KeyKind::PreKey).await.unwrap().is_empty());
+    }
+
     pub(crate) async fn exercise(store: &dyn Store) {
         assert!(store.get(KeyKind::Session, "a").await.unwrap().is_none());
         store.set(KeyKind::Session, "a", vec![1]).await.unwrap();
@@ -251,7 +291,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn coalesces_to_the_last_write_per_key() {
+    fn last_write_wins() {
         let writes = vec![
             KeyWrite::Set(KeyKind::Session, "x".into(), vec![1]),
             KeyWrite::Set(KeyKind::Session, "y".into(), vec![1]),
@@ -268,7 +308,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn caches_reads_and_batches_writes() {
+    async fn cache_and_batch() {
         let store = BatchedStore::new(Recorder::default());
         exercise(&store).await;
         for i in 0..1000 {

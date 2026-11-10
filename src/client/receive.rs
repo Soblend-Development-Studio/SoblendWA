@@ -79,7 +79,7 @@ impl Client {
             }
             (Some(message), None) => self.acknowledge_delivery(&node, &info, &message),
             (_, Some(err)) => {
-                self.await_retry(&info.id);
+                self.await_retry(&info, &err.to_string());
                 if let Err(retry_err) = self.request_retry(&node, &info).await {
                     tracing::debug!(%retry_err, "could not send retry receipt");
                 }
@@ -238,6 +238,9 @@ impl Client {
         };
         let body = unpad(&plaintext).ok_or_else(|| Error::signal("invalid message padding"))?;
         let mut message = Message::decode(body)?;
+        if !info.from_me {
+            self.learn_device(&info.sender).await;
+        }
         if let Some(sent) = message.device_sent_message.take() {
             if let Some(inner) = sent.message {
                 message = *inner;
@@ -396,7 +399,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_message_knows_both_phone_and_lid() {
+    async fn phone_and_lid() {
         let (client, _events) = Client::builder().build().await.unwrap();
         let phone = Jid::phone("5215511111111");
         let lid = Jid::lid("100000000000001");

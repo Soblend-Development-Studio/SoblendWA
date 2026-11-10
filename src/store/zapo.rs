@@ -394,7 +394,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn imports_a_real_zapo_database_and_rolls_back_into_it() {
+    async fn zapo_import_and_rollback() {
         let expected = read_json(&fixtures().join("expected.json"));
         let (store, repo) = take_over(&fixtures().join("alice.sqlite"), &expected).await;
         let bob = expected["bob"].as_str().unwrap();
@@ -434,7 +434,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "set SOBLEND_ZAPO_WORK to a folder produced by the zapo fixture script"]
-    async fn takes_over_from_zapo_and_hands_back() {
+    async fn zapo_takeover() {
         let work = PathBuf::from(std::env::var("SOBLEND_ZAPO_WORK").unwrap());
         let expected = read_json(&work.join("expected.json"));
         let db = work.join("alice.sqlite");
@@ -468,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn addresses_round_trip_between_both_formats() {
+    fn address_roundtrip() {
         for (user, server, device, ours) in [
             ("5215511111111", "s.whatsapp.net", 0, "5215511111111.0"),
             ("111111111111111", "lid", 7, "111111111111111_1.7"),

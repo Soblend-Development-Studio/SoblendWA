@@ -9,6 +9,7 @@ pub mod events;
 pub mod interactive;
 pub mod jid;
 pub mod json;
+mod json_text;
 pub mod message;
 pub mod proto;
 pub mod signal;
@@ -26,7 +27,7 @@ pub use client::{
     LinkPreview, LinkPreviewConfig, LinkPreviewFetcher, LinkThumbnail, LinkedGroup, MediaKind, MediaOptions,
     NewsletterInfo, NewsletterMessage, OnWhatsApp, ParticipantAction, ParticipantResult, PendingSend, Platform,
     PreviewChoice, PrivacySetting, PrivacyValue, Proxy, ProxyKind, ReachoutTimelock, SendLimit, SendOptions,
-    SendTimings, Stats, UploadedMedia, COLLECTIONS, DEFAULT_VERSION,
+    SendTimings, Spread, Stats, TimingSummary, UploadedMedia, COLLECTIONS, DEFAULT_VERSION,
 };
 pub use error::{Error, Result};
 
@@ -52,5 +53,5 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const AUTHOR: &str = "Soblend Development Studio";
 
 pub fn credits() -> String {
-    format!("{NAME} v{VERSION} · crafted by {AUTHOR}")
+    format!("{NAME} v{VERSION} · {AUTHOR}")
 }

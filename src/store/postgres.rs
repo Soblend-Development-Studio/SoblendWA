@@ -150,3 +150,20 @@ impl Backend for Postgres {
         tx.commit().await.map_err(failed)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::batched;
+
+    #[tokio::test]
+    #[ignore = "set SOBLEND_POSTGRES_URL to a PostgreSQL you can write to"]
+    async fn postgres_roundtrip() {
+        let url = std::env::var("SOBLEND_POSTGRES_URL").unwrap();
+        batched::tests::against_a_server(|account| {
+            let url = url.clone();
+            async move { PostgresStore::connect_account(&url, &account).await.unwrap() }
+        })
+        .await;
+    }
+}

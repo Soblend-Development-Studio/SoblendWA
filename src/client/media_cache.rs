@@ -74,12 +74,12 @@ impl Client {
     pub(crate) async fn cached_upload(&self, kind: MediaKind, file_sha256: &[u8]) -> Option<CachedUpload> {
         let ttl = self.inner.config.media_cache_ttl?;
         let key = cache_key(kind, file_sha256);
-        let raw = self.inner.store.get(KeyKind::MediaCache, &key).await.ok()??;
+        let raw = self.inner.media_store.get(KeyKind::MediaCache, &key).await.ok()??;
         let entry = CachedUpload::decode(raw.as_slice()).ok()?;
         let age = Duration::from_secs(now_secs().saturating_sub(entry.uploaded_at).max(0) as u64);
         let usable = age <= ttl && (age <= TRUSTED_FOR || self.still_hosted(&entry).await);
         if !usable {
-            let _ = self.inner.store.remove(KeyKind::MediaCache, &key).await;
+            let _ = self.inner.media_store.remove(KeyKind::MediaCache, &key).await;
             tracing::debug!(%key, ?age, "cached upload expired, uploading again");
             return None;
         }
@@ -115,13 +115,13 @@ impl Client {
             thumbnail: options.thumbnail.clone(),
         };
         let key = cache_key(kind, &uploaded.file_sha256);
-        if let Err(err) = self.inner.store.set(KeyKind::MediaCache, &key, entry.encode_to_vec()).await {
+        if let Err(err) = self.inner.media_store.set(KeyKind::MediaCache, &key, entry.encode_to_vec()).await {
             tracing::debug!(%err, "could not remember the upload");
         }
     }
 
     pub async fn forget_upload(&self, kind: MediaKind, file_sha256: &[u8]) -> crate::Result<()> {
-        self.inner.store.remove(KeyKind::MediaCache, &cache_key(kind, file_sha256)).await
+        self.inner.media_store.remove(KeyKind::MediaCache, &cache_key(kind, file_sha256)).await
     }
 }
 
@@ -146,7 +146,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repeated_media_is_sent_without_uploading_again() {
+    async fn media_reuse() {
         let (client, _events) = Client::builder().build().await.unwrap();
         let picture = b"rollwaifu: the same picture every time".to_vec();
         let sha = crypto::sha256(&picture);

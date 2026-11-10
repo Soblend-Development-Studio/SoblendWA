@@ -140,13 +140,22 @@ impl Jid {
 
 impl fmt::Display for Jid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.user.is_empty() {
-            f.write_str(&self.server)
-        } else if self.device > 0 {
-            write!(f, "{}:{}@{}", self.user, self.device, self.server)
-        } else {
-            write!(f, "{}@{}", self.user, self.server)
+        if !self.user.is_empty() {
+            f.write_str(&self.user)?;
+            if self.device > 0 {
+                let mut digits = [b':'; 6];
+                let mut at = digits.len();
+                let mut rest = self.device;
+                while rest > 0 {
+                    at -= 1;
+                    digits[at] = b'0' + (rest % 10) as u8;
+                    rest /= 10;
+                }
+                f.write_str(std::str::from_utf8(&digits[at - 1..]).unwrap_or_default())?;
+            }
+            f.write_str("@")?;
         }
+        f.write_str(&self.server)
     }
 }
 
@@ -217,6 +226,8 @@ mod tests {
         assert_eq!(jid.user, "5215512345678");
         assert_eq!(jid.device, 12);
         assert_eq!(jid.to_string(), "5215512345678:12@s.whatsapp.net");
+        assert_eq!(Jid::phone("1").with_device(65535).to_string(), "1:65535@s.whatsapp.net");
+        assert_eq!(format!("{:>40}", Jid::phone("1").with_device(9)), "1:9@s.whatsapp.net");
         assert_eq!(jid.signal_address(), "5215512345678.12");
 
         let lid: Jid = "123456789:3@lid".parse().unwrap();

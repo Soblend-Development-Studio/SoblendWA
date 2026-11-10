@@ -30,7 +30,7 @@ pub fn thumbnail(data: &[u8], width: u32) -> Result<Vec<u8>> {
     let (w, h) = image.dimensions();
     let target_w = width.min(w).max(1);
     let target_h = ((u64::from(h) * u64::from(target_w)) / u64::from(w.max(1))).max(1) as u32;
-    encode_jpeg(&image.resize_exact(target_w, target_h, FilterType::Triangle), 50)
+    encode_jpeg(&image.thumbnail_exact(target_w, target_h), 50)
 }
 
 pub fn profile_picture(data: &[u8]) -> Result<Vec<u8>> {
@@ -47,7 +47,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn makes_thumbnails_and_square_profile_pictures() {
+    #[ignore]
+    fn photo_cost() {
+        let photo = DynamicImage::ImageRgb8(image::RgbImage::from_fn(1600, 1200, |x, y| {
+            image::Rgb([(x * 7 % 251) as u8, (y * 13 % 241) as u8, ((x ^ y) % 239) as u8])
+        }));
+        let mut jpeg = std::io::Cursor::new(Vec::new());
+        photo.write_to(&mut jpeg, image::ImageFormat::Jpeg).unwrap();
+        let jpeg = jpeg.into_inner();
+        let time = |label: &str, work: &dyn Fn()| {
+            let started = std::time::Instant::now();
+            for _ in 0..5 {
+                work();
+            }
+            println!("BENCH {label}: {:?}", started.elapsed() / 5);
+        };
+        println!("BENCH foto de 1600x1200, {} KB", jpeg.len() / 1024);
+        time("dimensiones", &|| {
+            std::hint::black_box(image_dimensions(&jpeg));
+        });
+        time("miniatura", &|| {
+            let _ = std::hint::black_box(thumbnail(&jpeg, THUMBNAIL_WIDTH));
+        });
+        let key = [7u8; 32];
+        let iv = [9u8; 16];
+        time("cifrar + mac + hash", &|| {
+            let body = crate::crypto::aes_cbc_encrypt(&key, &iv, &jpeg).unwrap();
+            std::hint::black_box(crate::crypto::hmac_sha256(&key, &[&iv, &body]));
+            std::hint::black_box(crate::crypto::sha256(&body));
+            std::hint::black_box(crate::crypto::sha256(&jpeg));
+        });
+    }
+
+    #[test]
+    fn thumbnails() {
         let source = DynamicImage::new_rgb8(300, 120);
         let mut png = Cursor::new(Vec::new());
         source.write_to(&mut png, image::ImageFormat::Png).unwrap();

@@ -33,6 +33,14 @@ async fn throughput() {
     let (_, ack) = bob.encrypt("alice.0", b"ack").await.unwrap();
     alice.decrypt("bob.0", EncType::Message, &ack).await.unwrap();
 
+    let stored = alice.store.get(crate::store::KeyKind::Session, "bob.0").await.unwrap().unwrap();
+    let started = Instant::now();
+    for _ in 0..20_000 {
+        let record = super::session::SessionRecord::from_bytes(&stored).unwrap();
+        std::hint::black_box(record.to_bytes());
+    }
+    println!("BENCH session protobuf round trip: {:?} ({} bytes)", started.elapsed() / 20_000, stored.len());
+
     let payload = vec![7u8; 120];
     let rounds = 20_000;
     let started = Instant::now();

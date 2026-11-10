@@ -75,11 +75,12 @@ impl Client {
 
             let reconnect = match &outcome {
                 Outcome::Stopped => false,
-                Outcome::LoggedOut(reason) => {
+                Outcome::LoggedOut { reason, cause, code } => {
                     if let Err(err) = self.reset_session().await {
                         tracing::error!(%err, "failed to wipe the session after logout");
                     }
-                    self.emit(Event::LoggedOut { reason: reason.clone() });
+                    tracing::warn!(%reason, cause = cause.as_str(), ?code, "the session was logged out");
+                    self.emit(Event::LoggedOut { reason: reason.clone(), cause: *cause, code: *code });
                     false
                 }
                 Outcome::Replaced => false,
@@ -95,7 +96,7 @@ impl Client {
                 }
                 Outcome::QrTimeout | Outcome::Lost(_) => self.inner.config.auto_reconnect,
             };
-            if !matches!(outcome, Outcome::LoggedOut(_)) {
+            if !matches!(outcome, Outcome::LoggedOut { .. }) {
                 self.emit(Event::Disconnected { reason: outcome.reason(), reconnecting: reconnect });
             }
             if !reconnect {
@@ -434,7 +435,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reconnects_spread_out_and_back_off() {
+    fn backoff() {
         assert_eq!(reconnect_delay(0), None);
         let first: Vec<Duration> = (0..200).map(|_| reconnect_delay(1).unwrap()).collect();
         assert!(first.iter().all(|d| *d <= Duration::from_millis(750)));

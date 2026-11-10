@@ -10,6 +10,11 @@ use crate::message::now_secs;
 use crate::store::KeyKind;
 
 const DEVICE_REFRESH_AFTER: i64 = 15 * 60;
+const ASK_AGAIN_AFTER: i64 = 5;
+
+fn worth_asking_again(fetched_at: i64, devices: &[Jid]) -> bool {
+    devices.is_empty() && now_secs() - fetched_at > ASK_AGAIN_AFTER
+}
 const USYNC_BATCH: usize = 500;
 const PREFETCH_LIMIT: usize = 3000;
 
@@ -91,6 +96,7 @@ impl Client {
                 continue;
             }
             match self.cached_devices(&key).await {
+                Some((fetched_at, devices)) if worth_asking_again(fetched_at, &devices) => missing.push(key),
                 Some((fetched_at, devices)) => {
                     if now_secs() - fetched_at > DEVICE_REFRESH_AFTER {
                         stale.push(key);
@@ -141,9 +147,10 @@ impl Client {
         let mut found = Vec::new();
         let mut still_missing = Vec::new();
         for user in sorted {
-            match self.inner.devices.get(&user) {
-                Some(entry) => found.extend(entry.1.iter().cloned()),
-                None => still_missing.push(user),
+            let cached = self.inner.devices.get(&user).map(|entry| entry.clone());
+            match cached {
+                Some((fetched_at, devices)) if !worth_asking_again(fetched_at, &devices) => found.extend(devices),
+                _ => still_missing.push(user),
             }
         }
         if !still_missing.is_empty() {
@@ -228,6 +235,18 @@ impl Client {
         });
     }
 
+    pub(crate) async fn learn_device(&self, device: &Jid) {
+        let user = device.to_non_device();
+        let outdated = match self.inner.devices.get(&user) {
+            Some(entry) if entry.1.is_empty() => true,
+            Some(entry) => !entry.1.contains(device) && now_secs() - entry.0 > ASK_AGAIN_AFTER,
+            None => false,
+        };
+        if outdated {
+            self.devices_changed(&user).await;
+        }
+    }
+
     pub(crate) async fn devices_changed(&self, user: &Jid) {
         let user = user.to_non_device();
         self.inner.devices.remove(&user);
@@ -248,6 +267,7 @@ impl Client {
             tracing::debug!(%err, "failed to store lid mapping");
         }
         let _ = store.set(KeyKind::LidMapping, &format!("lid:{}", lid.user), pn.user.as_bytes().to_vec()).await;
+        self.emit(crate::events::Event::LidMapping { phone: pn.to_non_device(), lid: lid.to_non_device() });
     }
 
     pub async fn lid_for_phone(&self, pn: &Jid) -> Result<Option<Jid>> {
@@ -276,5 +296,22 @@ mod tests {
         assert_eq!(fetched_at, 1_700_000_000);
         assert_eq!(decoded, devices);
         assert_eq!(decode_device_list(&encode_device_list(5, &[])).unwrap().1, Vec::<Jid>::new());
+    }
+
+    #[tokio::test]
+    async fn lid_mapping_once() {
+        let (client, mut events) = Client::builder().build().await.unwrap();
+        let (phone, lid) = (Jid::phone("5215544444444"), Jid::lid("100000000000044"));
+        client.remember_lid(&phone, &lid).await;
+        client.remember_lid(&phone, &lid).await;
+        let mut announced = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let crate::events::Event::LidMapping { phone, lid } = event {
+                announced.push((phone, lid));
+            }
+        }
+        assert_eq!(announced, vec![(phone.clone(), lid.clone())]);
+        assert_eq!(client.lid_for_phone(&phone).await.unwrap(), Some(lid.clone()));
+        assert_eq!(client.phone_for_lid(&lid).await.unwrap(), Some(phone));
     }
 }

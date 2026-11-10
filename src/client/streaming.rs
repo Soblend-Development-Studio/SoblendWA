@@ -509,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_seal_matches_the_one_shot_encryption() {
+    fn streaming_seal_matches() {
         let key = crypto::random_array::<32>();
         let keys = expand_keys(&key, MediaKind::Video);
         for len in [0usize, 1, 15, 16, 17, 31, 32, 1000, 65_536, 100_003] {
@@ -532,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_open_verifies_everything() {
+    fn streaming_open() {
         let key = crypto::random_array::<32>();
         let keys = expand_keys(&key, MediaKind::Document);
         for len in [0usize, 5, 16, 33, 4096, 77_777] {
@@ -561,7 +561,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uploads_stream_from_disk_without_buffering_the_file() {
+    async fn streaming_upload() {
         let dir = std::env::temp_dir().join(format!("soblendwa-stream-{}", crypto::random_u32()));
         tokio::fs::create_dir_all(&dir).await.unwrap();
         let path = dir.join("video.mp4");
@@ -614,7 +614,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn downloads_land_on_disk_only_when_verified() {
+    async fn verified_download() {
         let (client, _events) = Client::builder().build().await.unwrap();
         let dir = std::env::temp_dir().join(format!("soblendwa-download-{}", crypto::random_u32()));
         let key = crypto::random_array::<32>();

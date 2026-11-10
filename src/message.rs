@@ -590,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn builders_follow_the_official_client() {
+    fn builders() {
         let single = Message::poll("¿Pizza o tacos?", ["Pizza", "Tacos"], 1);
         assert!(single.poll_creation_message_v3.is_some() && single.poll_creation_message.is_none());
         let multiple = Message::poll("¿Qué te gusta?", ["Rust", "Go", "Zig"], 0);
@@ -618,14 +618,14 @@ mod tests {
     }
 
     #[test]
-    fn message_ids_look_native() {
+    fn message_ids() {
         let id = generate_message_id(Some(&Jid::phone("5215512345678")));
         assert_eq!(id.len(), 22);
         assert!(id.starts_with("3EB0"));
     }
 
     #[test]
-    fn bookkeeping_only_messages_have_no_content() {
+    fn protocol_only() {
         let skdm = Message {
             sender_key_distribution_message: Some(Box::new(crate::proto::SenderKeyDistributionMessage {
                 group_id: Some("1@g.us".into()),
@@ -647,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn mention_upgrades_plain_text() {
+    fn mention_upgrade() {
         let jid = Jid::phone("5215512345678");
         let message = Message::text("hola @5215512345678").mention([&jid]);
         assert!(message.conversation.is_none());

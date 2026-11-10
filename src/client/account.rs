@@ -162,7 +162,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_bots_disappearing_modes_and_timelocks() {
+    fn bots_and_timelocks() {
         let bots = Node::new("iq").child_node(
             Node::new("bot").children([
                 Node::new("section").attr("type", "all").children([Node::new("bot")

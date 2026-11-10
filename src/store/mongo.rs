@@ -168,10 +168,34 @@ impl Backend for Mongo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{batched, Store};
+    use crate::store::batched;
 
     #[test]
-    fn writes_are_split_into_safe_commands() {
+    #[ignore]
+    fn bson_vs_json() {
+        let creds = Creds::generate();
+        let rounds = 20_000;
+        let started = std::time::Instant::now();
+        for _ in 0..rounds {
+            let bytes = serde_json::to_vec(&creds).unwrap();
+            std::hint::black_box(serde_json::from_slice::<Creds>(&bytes).unwrap());
+        }
+        let json = started.elapsed() / rounds;
+        let started = std::time::Instant::now();
+        for _ in 0..rounds {
+            let bytes = mongodb::bson::to_vec(&creds).unwrap();
+            std::hint::black_box(mongodb::bson::from_slice::<Creds>(&bytes).unwrap());
+        }
+        let bson = started.elapsed() / rounds;
+        println!(
+            "BENCH creds round trip: json {json:?} ({} bytes) · bson {bson:?} ({} bytes)",
+            serde_json::to_vec(&creds).unwrap().len(),
+            mongodb::bson::to_vec(&creds).unwrap().len()
+        );
+    }
+
+    #[test]
+    fn split_writes() {
         let big = vec![7u8; 3 * 1024 * 1024];
         let mut writes: Vec<KeyWrite> =
             (0..5).map(|i| KeyWrite::Set(KeyKind::Session, format!("big{i}"), big.clone())).collect();
@@ -197,26 +221,15 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "set SOBLEND_MONGO_URL to a MongoDB you can write to"]
-    async fn mongo_round_trip_and_account_isolation() {
+    async fn mongo_roundtrip() {
         let url = std::env::var("SOBLEND_MONGO_URL").unwrap();
         let database = format!("soblendwa_test_{}", crate::crypto::random_u32());
-        let store = MongoStore::connect_account(&url, &database, "bot").await.unwrap();
-        batched::tests::exercise(&store).await;
-
-        let other = MongoStore::connect_account(&url, &database, "otro").await.unwrap();
-        store.set(KeyKind::Session, "5215500000000.0", vec![7; 64]).await.unwrap();
-        other.set(KeyKind::Session, "5215500000000.0", vec![9]).await.unwrap();
-        store.save_creds(&Creds::generate()).await.unwrap();
-        store.flush().await.unwrap();
-        other.flush().await.unwrap();
-
-        let reopened = MongoStore::connect_account(&url, &database, "bot").await.unwrap();
-        assert!(reopened.load_creds().await.unwrap().is_some());
-        assert_eq!(reopened.get(KeyKind::Session, "5215500000000.0").await.unwrap(), Some(vec![7; 64]));
-        assert_eq!(reopened.keys(KeyKind::Session).await.unwrap(), vec!["5215500000000.0".to_owned()]);
-        let isolated = MongoStore::connect_account(&url, &database, "otro").await.unwrap();
-        assert!(isolated.load_creds().await.unwrap().is_none());
-        assert_eq!(isolated.get(KeyKind::Session, "5215500000000.0").await.unwrap(), Some(vec![9]));
-        store.backend().database.drop().await.unwrap();
+        batched::tests::against_a_server(|account| {
+            let (url, database) = (url.clone(), database.clone());
+            async move { MongoStore::connect_account(&url, &database, &account).await.unwrap() }
+        })
+        .await;
+        let leftover = MongoStore::connect_account(&url, &database, "bot").await.unwrap();
+        leftover.backend().database.drop().await.unwrap();
     }
 }

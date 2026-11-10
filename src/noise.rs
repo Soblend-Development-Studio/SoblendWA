@@ -326,7 +326,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frames_split_across_reads() {
+    fn split_frames() {
         let a = frame(None, b"first").unwrap();
         let b = frame(None, &[7u8; 70_000]).unwrap();
         let mut stream = a.clone();

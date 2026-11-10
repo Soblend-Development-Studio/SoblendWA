@@ -77,7 +77,7 @@ mod tests {
     use crate::proto::{Conversation, Pushname};
 
     #[test]
-    fn inflates_and_decodes_history() {
+    fn history_blob() {
         let history = HistorySync {
             sync_type: HistorySync::RECENT,
             conversations: vec![Conversation { id: "5215512345678@s.whatsapp.net".into(), ..Default::default() }],

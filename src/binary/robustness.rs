@@ -101,7 +101,7 @@ fn compressed(raw: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn random_nodes_survive_a_round_trip() {
+fn random_nodes() {
     let mut rng = Rng(0x5eb1_e4d0_c0de_f00d);
     for round in 0..3_000 {
         let original = node(&mut rng, 0);
@@ -114,7 +114,7 @@ fn random_nodes_survive_a_round_trip() {
 }
 
 #[test]
-fn random_garbage_never_panics() {
+fn garbage() {
     let mut rng = Rng(0xdead_beef_cafe_babe);
     for _ in 0..200_000 {
         let len = rng.below(96);
@@ -128,7 +128,7 @@ fn random_garbage_never_panics() {
 }
 
 #[test]
-fn mutated_frames_never_panic() {
+fn mutated_frames() {
     let mut rng = Rng(0x0123_4567_89ab_cdef);
     let seeds: Vec<Vec<u8>> = (0..64).map(|_| encode(&node(&mut rng, 0))).collect();
     for _ in 0..60_000 {
@@ -152,7 +152,7 @@ fn mutated_frames_never_panic() {
 }
 
 #[test]
-fn hostile_nesting_is_rejected_without_blowing_the_stack() {
+fn deep_nesting() {
     let mut nested_nodes = vec![0u8];
     for _ in 0..200_000 {
         nested_nodes.extend_from_slice(&[tag::LIST_8, 2, 3, tag::LIST_8, 1]);
@@ -171,7 +171,7 @@ fn hostile_nesting_is_rejected_without_blowing_the_stack() {
 }
 
 #[test]
-fn compression_bombs_are_capped() {
+fn compression_bomb() {
     let bomb = compressed(&vec![0u8; 40 * 1024 * 1024]);
     assert!(decode_frame(&bomb).is_err());
 }

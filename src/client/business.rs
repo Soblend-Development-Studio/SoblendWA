@@ -445,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_product_nodes_like_the_official_client() {
+    fn product_nodes() {
         let draft = ProductDraft { name: Some("Taza".into()), price: Some(99_000), ..Default::default() };
         let created = product_node(None, &draft, &["https://mmg.whatsapp.net/x".into()], true);
         assert!(created.attr_is("compliance_category", "COUNTRY_ORIGIN_EXEMPT"));

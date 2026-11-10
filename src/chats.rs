@@ -804,7 +804,7 @@ mod tests {
     }
 
     #[test]
-    fn learns_from_history_and_app_state() {
+    fn history_and_app_state() {
         let store = ChatStore::new();
         let group = Jid::group("120363000000000001");
         let ana = Jid::phone("5215511111111");

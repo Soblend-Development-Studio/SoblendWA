@@ -668,7 +668,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn finds_links_the_way_people_write_them() {
+    fn finds_links() {
         assert_eq!(find_url("mira esto https://soblend.dev/docs, es genial"), Some("https://soblend.dev/docs"));
         assert_eq!(find_url("sin enlaces"), None);
         assert_eq!(find_url("(http://a.io/x)"), Some("http://a.io/x"));
@@ -681,7 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_open_graph_tags_like_a_browser() {
+    fn open_graph() {
         let html = r#"<html><head><title>Fallback</title>
             <meta property="og:title" content="SoblendWA &amp; Rust &#x1F980;">
             <meta name='description' content='  El  cliente
@@ -702,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn private_hosts_are_refused() {
+    fn private_hosts() {
         for url in [
             "http://127.0.0.1/",
             "http://2130706433/",
@@ -730,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn hostile_images_cannot_exhaust_memory() {
+    fn hostile_images() {
         let huge = image::RgbImage::new(13_000, 1);
         let mut png = Cursor::new(Vec::new());
         DynamicImage::ImageRgb8(huge).write_to(&mut png, image::ImageFormat::Png).unwrap();

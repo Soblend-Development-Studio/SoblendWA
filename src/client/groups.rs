@@ -305,7 +305,16 @@ impl Client {
         let code = invite.rsplit('/').next().unwrap_or(invite).to_owned();
         let response =
             self.query(self.group_iq(Jid::group_server(), "set", Node::new("invite").attr("code", code))).await?;
-        response.child("group").and_then(|g| g.attr_jid("jid")).ok_or_else(|| Error::binary("missing joined group"))
+        if let Some(request) = response.child("membership_approval_request") {
+            let group = request.attr_jid("jid").unwrap_or_else(Jid::group_server);
+            return Err(Error::ApprovalRequired(group));
+        }
+        let group = response
+            .child("group")
+            .and_then(|g| g.attr_jid("jid"))
+            .ok_or_else(|| Error::binary("missing joined group"))?;
+        self.announce_join(&group, None, crate::events::JoinVia::Invite);
+        Ok(group)
     }
 
     pub async fn group_invite_info(&self, invite: &str) -> Result<GroupInfo> {
@@ -397,7 +406,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn group_info_survives_persistence() {
+    fn group_info_persists() {
         let node = Node::new("group")
             .attr("id", "120363025246125486")
             .attr("subject", "Soblend")

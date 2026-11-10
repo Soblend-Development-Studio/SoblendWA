@@ -140,7 +140,7 @@ mod tests {
     use crate::proto::MessageContextInfo;
 
     #[test]
-    fn keeps_only_reportable_fields() {
+    fn reportable_fields() {
         let mut poll = Message::poll("¿Rust?", ["Sí", "Claro"], 1);
         poll.message_context_info = Some(Box::new(MessageContextInfo {
             device_list_metadata_version: None,
@@ -158,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn long_varints_do_not_break_extraction() {
+    fn long_varints() {
         let edit = Message::edit(
             crate::proto::MessageKey { id: Some("X".into()), ..Default::default() },
             Message::text("nuevo"),

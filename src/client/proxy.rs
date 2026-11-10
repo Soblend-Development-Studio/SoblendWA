@@ -409,7 +409,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tunnels_through_socks5_with_credentials() {
+    async fn socks5_auth() {
         let echo = echo_server().await;
         let proxy =
             Proxy::parse(&format!("socks5://ana:secreto@127.0.0.1:{}", fake_socks5("ana", "secreto").await)).unwrap();
@@ -422,7 +422,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "connects to the real WhatsApp servers"]
-    async fn live_qr_through_a_socks5_proxy() {
+    async fn live_qr_socks5() {
         let port = fake_socks5("ana", "secreto").await;
         let proxy = Proxy::parse(&format!("socks5://ana:secreto@127.0.0.1:{port}")).unwrap();
         let (client, mut events) = crate::Client::builder().proxy(proxy).build().await.unwrap();
@@ -441,7 +441,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tunnels_through_http_connect() {
+    async fn http_connect_tunnel() {
         let echo = echo_server().await;
         let proxy = Proxy::parse(&format!("http://ana:secreto@127.0.0.1:{}", fake_http_proxy().await)).unwrap();
         round_trip(proxy.connect("127.0.0.1", echo).await.unwrap()).await;
