@@ -126,3 +126,125 @@ async fn throughput() {
         rounds as f64 / elapsed.as_secs_f64()
     );
 }
+
+struct SlowReads {
+    inner: Arc<dyn crate::store::Store>,
+    delay: std::time::Duration,
+}
+
+#[async_trait::async_trait]
+impl crate::store::Store for SlowReads {
+    async fn load_creds(&self) -> crate::Result<Option<Creds>> {
+        self.inner.load_creds().await
+    }
+
+    async fn save_creds(&self, creds: &Creds) -> crate::Result<()> {
+        self.inner.save_creds(creds).await
+    }
+
+    async fn get(&self, kind: crate::store::KeyKind, key: &str) -> crate::Result<Option<Vec<u8>>> {
+        tokio::time::sleep(self.delay).await;
+        self.inner.get(kind, key).await
+    }
+
+    async fn set(&self, kind: crate::store::KeyKind, key: &str, value: Vec<u8>) -> crate::Result<()> {
+        self.inner.set(kind, key, value).await
+    }
+
+    async fn remove(&self, kind: crate::store::KeyKind, key: &str) -> crate::Result<()> {
+        self.inner.remove(kind, key).await
+    }
+
+    async fn clear(&self) -> crate::Result<()> {
+        self.inner.clear().await
+    }
+}
+
+async fn talking_to(bot: &SignalRepository, bot_creds: &Creds, peers: usize) -> Vec<SignalRepository> {
+    let mut out = Vec::with_capacity(peers);
+    for i in 0..peers {
+        let (peer, _) = peer();
+        let one_time = KeyPair::generate();
+        let id = 1000 + i as u32;
+        bot.store_pre_keys(&[(id, one_time.clone())]).await.unwrap();
+        let bundle = PreKeyBundle {
+            registration_id: bot_creds.registration_id,
+            identity_key: bot_creds.identity_key.public,
+            signed_pre_key_id: bot_creds.signed_pre_key.id,
+            signed_pre_key: bot_creds.signed_pre_key.key_pair.public,
+            signed_pre_key_signature: bot_creds.signed_pre_key.signature,
+            pre_key: Some((id, one_time.public)),
+        };
+        peer.inject_bundle("bot.0", &bundle).await.unwrap();
+        let (kind, first) = peer.encrypt("bot.0", b"hola").await.unwrap();
+        bot.decrypt(&format!("peer{i}.0"), kind, &first).await.unwrap();
+        let (kind, answer) = bot.encrypt(&format!("peer{i}.0"), b"hola").await.unwrap();
+        peer.decrypt("bot.0", kind, &answer).await.unwrap();
+        out.push(peer);
+    }
+    out
+}
+
+async fn decrypt_all(bot: &Arc<SignalRepository>, inbox: Vec<Vec<(EncType, Vec<u8>)>>) -> std::time::Duration {
+    let started = Instant::now();
+    let tasks: Vec<_> = inbox
+        .into_iter()
+        .enumerate()
+        .map(|(i, messages)| {
+            let bot = bot.clone();
+            tokio::spawn(async move {
+                for (kind, data) in messages {
+                    bot.decrypt(&format!("peer{i}.0"), kind, &data).await.unwrap();
+                }
+            })
+        })
+        .collect();
+    for task in tasks {
+        task.await.unwrap();
+    }
+    started.elapsed()
+}
+
+async fn inbox(peers: &[SignalRepository], each: usize) -> Vec<Vec<(EncType, Vec<u8>)>> {
+    let mut out = Vec::new();
+    for peer in peers {
+        let mut messages = Vec::with_capacity(each);
+        for _ in 0..each {
+            messages.push(peer.encrypt("bot.0", &[7u8; 120]).await.unwrap());
+        }
+        out.push(messages);
+    }
+    out
+}
+
+fn contention_round(threads: usize) {
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(threads).enable_all().build().unwrap();
+    runtime.block_on(async {
+        let creds = Creds::generate();
+        let store: Arc<dyn crate::store::Store> = Arc::new(MemoryStore::new());
+        let bot = SignalRepository::new(store.clone(), &creds);
+        let peers = talking_to(&bot, &creds, 32).await;
+
+        let warm = Arc::new(bot);
+        let each = 300;
+        let took = decrypt_all(&warm, inbox(&peers, each).await).await;
+        println!(
+            "BENCH {threads} thread(s), 32 chats in cache: {:.0} decrypts/s",
+            (32 * each) as f64 / took.as_secs_f64()
+        );
+
+        let delay = std::time::Duration::from_millis(5);
+        let slow: Arc<dyn crate::store::Store> = Arc::new(SlowReads { inner: store, delay });
+        let restarted = Arc::new(SignalRepository::new(slow, &creds));
+        let took = decrypt_all(&restarted, inbox(&peers, 1).await).await;
+        println!("BENCH {threads} thread(s), 32 chats after a restart, {delay:?} per store read: {took:?}");
+    });
+}
+
+#[test]
+#[ignore]
+fn contention() {
+    for threads in [1, 4] {
+        contention_round(threads);
+    }
+}

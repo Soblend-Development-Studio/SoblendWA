@@ -3,10 +3,11 @@ mod bench;
 mod group;
 mod session;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
+use dashmap::DashMap;
+use futures_util::future::join_all;
+use tokio::sync::{Mutex, OwnedMappedMutexGuard, OwnedMutexGuard};
 
 pub use session::{EncType, PreKeyBundle};
 
@@ -17,10 +18,23 @@ use crate::crypto::KeyPair;
 use crate::error::{Error, Result};
 use crate::store::{Creds, KeyKind, Store};
 
+type Slot<T> = Arc<Mutex<Option<T>>>;
+type Held<T> = OwnedMappedMutexGuard<Option<T>, T>;
+
+// One lock per address, not one for the whole account. After a restart each chat's first message reads its session
+// from the store, and with a remote database those reads used to wait for each other: 32 chats, 32 reads in a row
+// (bench::contention).
 #[derive(Default)]
 struct Cache {
-    sessions: HashMap<String, SessionRecord>,
-    sender_keys: HashMap<String, SenderKeyRecord>,
+    sessions: DashMap<String, Slot<SessionRecord>>,
+    sender_keys: DashMap<String, Slot<SenderKeyRecord>>,
+}
+
+fn slot<T>(map: &DashMap<String, Slot<T>>, key: &str) -> Slot<T> {
+    if let Some(found) = map.get(key) {
+        return found.clone();
+    }
+    map.entry(key.to_owned()).or_default().clone()
 }
 
 pub(crate) struct SignalRepository {
@@ -28,7 +42,8 @@ pub(crate) struct SignalRepository {
     identity: KeyPair,
     registration_id: u32,
     signed_pre_key: parking_lot::RwLock<(u32, KeyPair)>,
-    cache: Mutex<Cache>,
+    cache: Cache,
+    spending_pre_keys: Mutex<()>,
 }
 
 const PARALLEL_THRESHOLD: usize = 16;
@@ -116,37 +131,44 @@ impl SignalRepository {
             identity: creds.identity_key.clone(),
             registration_id: creds.registration_id,
             signed_pre_key: parking_lot::RwLock::new((creds.signed_pre_key.id, creds.signed_pre_key.key_pair.clone())),
-            cache: Mutex::new(Cache::default()),
+            cache: Cache::default(),
+            spending_pre_keys: Mutex::new(()),
         }
     }
 
-    async fn load_session<'a>(&self, cache: &'a mut Cache, address: &str) -> Result<&'a mut SessionRecord> {
-        if !cache.sessions.contains_key(address) {
-            let record = match self.store.get(KeyKind::Session, address).await? {
+    async fn session(&self, address: &str) -> Result<Held<SessionRecord>> {
+        let mut held = slot(&self.cache.sessions, address).lock_owned().await;
+        if held.is_none() {
+            *held = Some(match self.store.get(KeyKind::Session, address).await? {
                 Some(bytes) => SessionRecord::from_bytes(&bytes).unwrap_or_default(),
                 None => SessionRecord::default(),
-            };
-            cache.sessions.insert(address.to_owned(), record);
+            });
         }
-        Ok(cache.sessions.get_mut(address).expect("inserted above"))
+        Ok(OwnedMutexGuard::map(held, |record| record.get_or_insert_with(SessionRecord::default)))
     }
 
-    async fn load_sender_key<'a>(&self, cache: &'a mut Cache, name: &str) -> Result<&'a mut SenderKeyRecord> {
-        if !cache.sender_keys.contains_key(name) {
-            let record = match self.store.get(KeyKind::SenderKey, name).await? {
+    async fn sender_key(&self, name: &str) -> Result<Held<SenderKeyRecord>> {
+        let mut held = slot(&self.cache.sender_keys, name).lock_owned().await;
+        if held.is_none() {
+            *held = Some(match self.store.get(KeyKind::SenderKey, name).await? {
                 Some(bytes) => SenderKeyRecord::from_bytes(&bytes).unwrap_or_default(),
                 None => SenderKeyRecord::default(),
-            };
-            cache.sender_keys.insert(name.to_owned(), record);
+            });
         }
-        Ok(cache.sender_keys.get_mut(name).expect("inserted above"))
+        Ok(OwnedMutexGuard::map(held, |record| record.get_or_insert_with(SenderKeyRecord::default)))
     }
 
     pub(crate) async fn missing_sessions(&self, addresses: &[String]) -> Result<Vec<String>> {
-        let mut cache = self.cache.lock().await;
+        let known = join_all(
+            addresses
+                .iter()
+                .map(|address| async move { Ok::<_, Error>((address, self.session(address).await?.has_session())) }),
+        )
+        .await;
         let mut missing = Vec::new();
-        for address in addresses {
-            if !self.load_session(&mut cache, address).await?.has_session() {
+        for result in known {
+            let (address, has_session) = result?;
+            if !has_session {
                 missing.push(address.clone());
             }
         }
@@ -165,44 +187,37 @@ impl SignalRepository {
         } else {
             tokio::task::spawn_blocking(move || initiate_parallel(&identity, &bundles)).await.unwrap_or_default()
         };
-
-        let mut cache = self.cache.lock().await;
-        let mut out = Vec::with_capacity(initiated.len());
-        for (address, state) in initiated {
-            let result = match state {
-                Ok(state) => match self.load_session(&mut cache, &address).await {
-                    Ok(record) => {
-                        record.promote(state);
-                        self.store.set(KeyKind::Session, &address, record.to_bytes()).await
-                    }
-                    Err(err) => Err(err),
-                },
-                Err(err) => Err(err),
-            };
-            out.push((address, result));
-        }
-        out
+        join_all(initiated.into_iter().map(|(address, state)| async move {
+            let result = async {
+                let state = state?;
+                let mut record = self.session(&address).await?;
+                record.promote(state);
+                self.store.set(KeyKind::Session, &address, record.to_bytes()).await
+            }
+            .await;
+            (address, result)
+        }))
+        .await
     }
 
+    // Each address is loaded, encrypted and saved under its own lock, so a group send to 200 devices right after
+    // a restart reads their sessions from the store at the same time instead of one after another.
     pub(crate) async fn encrypt_many(
         &self,
         addresses: &[String],
         plaintext: &[u8],
     ) -> Vec<(String, Result<(EncType, Vec<u8>)>)> {
-        let mut cache = self.cache.lock().await;
-        let mut out = Vec::with_capacity(addresses.len());
-        for address in addresses {
+        join_all(addresses.iter().map(|address| async move {
             let result = async {
-                let record = self.load_session(&mut cache, address).await?;
+                let mut record = self.session(address).await?;
                 let encrypted = record.encrypt(&self.identity, self.registration_id, plaintext)?;
-                let bytes = record.to_bytes();
-                self.store.set(KeyKind::Session, address, bytes).await?;
+                self.store.set(KeyKind::Session, address, record.to_bytes()).await?;
                 Ok(encrypted)
             }
             .await;
-            out.push((address.clone(), result));
-        }
-        out
+            (address.clone(), result)
+        }))
+        .await
     }
 
     pub(crate) async fn encrypt(&self, address: &str, plaintext: &[u8]) -> Result<(EncType, Vec<u8>)> {
@@ -210,22 +225,24 @@ impl SignalRepository {
         results.pop().map(|(_, r)| r).unwrap_or_else(|| Err(Error::signal("encryption produced no output")))
     }
 
+    // The record is saved before its lock is released. Saving after it let two threads write the same session
+    // in the opposite order of the changes, leaving an older ratchet in the store.
     pub(crate) async fn decrypt(&self, address: &str, kind: EncType, data: &[u8]) -> Result<Vec<u8>> {
-        let mut cache = self.cache.lock().await;
         match kind {
             EncType::Message => {
-                let record = self.load_session(&mut cache, address).await?;
+                let mut record = self.session(address).await?;
                 let plaintext = record.decrypt(&self.identity, data)?;
-                let bytes = record.to_bytes();
-                drop(cache);
-                self.store.set(KeyKind::Session, address, bytes).await?;
+                self.store.set(KeyKind::Session, address, record.to_bytes()).await?;
                 Ok(plaintext)
             }
             EncType::PreKey => {
                 let incoming = IncomingPreKey::parse(data)?;
                 let signed = self.signed_pre_key_for(incoming.signed_pre_key_id).await?;
-                let known = self.load_session(&mut cache, address).await?.has_base_key(&incoming.base_key);
-                let one_time = match (known, incoming.pre_key_id) {
+                // one-time pre-keys are spent one at a time across all addresses, as before. Only the first
+                // message of a session comes this way, so this lock is almost never contended.
+                let _spending = self.spending_pre_keys.lock().await;
+                let mut record = self.session(address).await?;
+                let one_time = match (record.has_base_key(&incoming.base_key), incoming.pre_key_id) {
                     (false, Some(id)) => Some(
                         self.load_pre_key(id)
                             .await?
@@ -233,11 +250,9 @@ impl SignalRepository {
                     ),
                     _ => None,
                 };
-                let record = self.load_session(&mut cache, address).await?;
                 let plaintext = record.decrypt_pre_key(&self.identity, &signed, one_time.as_ref(), &incoming)?;
-                let bytes = record.to_bytes();
-                drop(cache);
-                self.store.set(KeyKind::Session, address, bytes).await?;
+                self.store.set(KeyKind::Session, address, record.to_bytes()).await?;
+                drop(record);
                 if let (Some(id), Some(_)) = (incoming.pre_key_id, one_time) {
                     self.store.remove(KeyKind::PreKey, &id.to_string()).await?;
                 }
@@ -283,23 +298,18 @@ impl SignalRepository {
 
     pub(crate) async fn group_encrypt(&self, group: &str, me: &str, plaintext: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
         let name = sender_key_name(group, me);
-        let mut cache = self.cache.lock().await;
-        let record = self.load_sender_key(&mut cache, &name).await?;
+        let mut record = self.sender_key(&name).await?;
         if record.is_empty() {
             *record = SenderKeyRecord::create_own();
         }
         let distribution = record.distribution_message()?;
         let ciphertext = record.encrypt(plaintext)?;
-        let bytes = record.to_bytes();
-        drop(cache);
-        self.store.set(KeyKind::SenderKey, &name, bytes).await?;
+        self.store.set(KeyKind::SenderKey, &name, record.to_bytes()).await?;
         Ok((ciphertext, distribution))
     }
 
     pub(crate) async fn group_distribution(&self, group: &str, me: &str) -> Result<Option<Vec<u8>>> {
-        let name = sender_key_name(group, me);
-        let mut cache = self.cache.lock().await;
-        let record = self.load_sender_key(&mut cache, &name).await?;
+        let record = self.sender_key(&sender_key_name(group, me)).await?;
         if record.is_empty() {
             return Ok(None);
         }
@@ -308,28 +318,23 @@ impl SignalRepository {
 
     pub(crate) async fn group_decrypt(&self, group: &str, sender: &str, data: &[u8]) -> Result<Vec<u8>> {
         let name = sender_key_name(group, sender);
-        let mut cache = self.cache.lock().await;
-        let record = self.load_sender_key(&mut cache, &name).await?;
+        let mut record = self.sender_key(&name).await?;
         let plaintext = record.decrypt(data)?;
-        let bytes = record.to_bytes();
-        drop(cache);
-        self.store.set(KeyKind::SenderKey, &name, bytes).await?;
+        self.store.set(KeyKind::SenderKey, &name, record.to_bytes()).await?;
         Ok(plaintext)
     }
 
     pub(crate) async fn process_distribution(&self, group: &str, sender: &str, data: &[u8]) -> Result<()> {
         let name = sender_key_name(group, sender);
-        let mut cache = self.cache.lock().await;
-        let record = self.load_sender_key(&mut cache, &name).await?;
+        let mut record = self.sender_key(&name).await?;
         record.process_distribution(data)?;
-        let bytes = record.to_bytes();
-        drop(cache);
-        self.store.set(KeyKind::SenderKey, &name, bytes).await
+        self.store.set(KeyKind::SenderKey, &name, record.to_bytes()).await
     }
 
     pub(crate) async fn reset_own_sender_key(&self, group: &str, me: &str) -> Result<()> {
         let name = sender_key_name(group, me);
-        self.cache.lock().await.sender_keys.remove(&name);
+        let mut held = slot(&self.cache.sender_keys, &name).lock_owned().await;
+        *held = Some(SenderKeyRecord::default());
         self.store.remove(KeyKind::SenderKey, &name).await
     }
 }
