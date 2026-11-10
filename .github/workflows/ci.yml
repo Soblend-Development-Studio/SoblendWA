@@ -53,3 +53,37 @@ jobs:
         with:
           name: soak-report
           path: soak.jsonl
+
+  real-databases:
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:7
+        ports: ["27017:27017"]
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: soblend
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+    env:
+      SOBLEND_MONGO_URL: mongodb://127.0.0.1:27017
+      SOBLEND_POSTGRES_URL: postgres://postgres:soblend@127.0.0.1:5432/postgres
+      SOBLEND_REDIS_URL: redis://127.0.0.1:6379/
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: cargo test --features "stores testing" --lib -- --ignored mongo_roundtrip zapo_mongo_live postgres_roundtrip redis_roundtrip
+      - run: cargo build -p soblendwa-node && cp target/debug/libsoblendwa_node.so bindings/node/soblendwa.node
+      - run: |
+          node bindings/node/store-check.js "{\"type\":\"mongo\",\"url\":\"$SOBLEND_MONGO_URL\",\"database\":\"soblendwa_ci\"}"
+          node bindings/node/store-check.js "{\"type\":\"postgres\",\"url\":\"$SOBLEND_POSTGRES_URL\"}"
+          node bindings/node/store-check.js "{\"type\":\"redis\",\"url\":\"$SOBLEND_REDIS_URL\"}"
+          node bindings/node/store-check.js "{\"type\":\"sqlite\",\"path\":\"ci-store.db\"}"
