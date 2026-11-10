@@ -1,7 +1,7 @@
 {
   "name": "soblendwa-client",
-  "version": "0.1.0",
-  "description": "JavaScript and TypeScript client for the SoblendWA server: WhatsApp bots in any runtime, powered by Rust. By Soblend Development Studio.",
+  "version": "0.2.0",
+  "description": "JavaScript/TypeScript client for soblendwa-server. Works in Node, Bun, Deno and browsers. By Soblend Development Studio.",
   "author": "Soblend Development Studio",
   "license": "MIT",
   "homepage": "https://github.com/Soblend-Development-Studio/SoblendWA/tree/main/clients/js#readme",

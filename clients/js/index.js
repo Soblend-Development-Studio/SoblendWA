@@ -1,5 +1,14 @@
 const DEFAULT_URL = 'ws://127.0.0.1:8787'
 
+export class SoblendError extends Error {
+  constructor(code, message, status = null) {
+    super(message)
+    this.name = 'SoblendError'
+    this.code = code
+    this.status = status
+  }
+}
+
 class Emitter {
   constructor() {
     this.listeners = new Map()
@@ -65,7 +74,21 @@ function idOf(message) {
   return message?.info?.id ?? message?.id
 }
 
-function media({ quoted, ...options } = {}) {
+function list(values) {
+  return [values].flat(Infinity).filter((value) => value != null).map(String)
+}
+
+function previewOption(preview) {
+  if (preview === undefined || preview === null || typeof preview === 'boolean') return preview
+  const normalized = { ...preview }
+  for (const key of ['thumbnail', 'image']) {
+    if (normalized[key] != null) normalized[key] = toBase64(normalized[key])
+  }
+  return normalized
+}
+
+function media({ quoted, mentions, ...options } = {}) {
+  if (mentions) options.mentions = list(mentions)
   return { ...options, quotedId: quoted ? idOf(quoted) : undefined }
 }
 
@@ -148,7 +171,7 @@ export class SoblendClient extends Emitter {
       const { resolve, reject, timer } = this.pending.get(frame.id)
       this.pending.delete(frame.id)
       clearTimeout(timer)
-      if (frame.error) reject(new Error(frame.error.message))
+      if (frame.error) reject(new SoblendError(frame.error.code ?? 'OTHER', frame.error.message, frame.error.status ?? null))
       else resolve(frame.result)
       return
     }
@@ -177,13 +200,13 @@ export class SoblendClient extends Emitter {
 
   call(method, params = {}) {
     if (!this.socket || this.socket.readyState !== 1) {
-      return Promise.reject(new Error('not connected to the SoblendWA server'))
+      return Promise.reject(new SoblendError('NOT_CONNECTED', 'not connected to the SoblendWA server'))
     }
     const id = ++this.counter
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)
-        reject(new Error(`${method} timed out`))
+        reject(new SoblendError('TIMEOUT', `${method} timed out`))
       }, this.timeout)
       this.pending.set(id, { resolve, reject, timer })
       this.socket.send(JSON.stringify({ id, method, params }))
@@ -243,8 +266,34 @@ export class SoblendClient extends Emitter {
     return this.call('logout')
   }
 
-  sendText(chat, text, { quoted, preview } = {}) {
-    return this.call('sendText', { chat, text, quotedId: quoted ? idOf(quoted) : undefined, preview })
+  sendText(chat, text, { quoted, preview, mentions } = {}) {
+    return this.call('sendText', {
+      chat,
+      text,
+      quotedId: quoted ? idOf(quoted) : undefined,
+      preview: previewOption(preview),
+      mentions: mentions ? list(mentions) : undefined,
+    })
+  }
+
+  waitFor(type, filter = null, timeout = 30000) {
+    return new Promise((resolve, reject) => {
+      const listener = (event) => {
+        if (filter && !filter(event)) return
+        clearTimeout(timer)
+        this.off(type, listener)
+        resolve(event)
+      }
+      const timer = setTimeout(() => {
+        this.off(type, listener)
+        reject(new SoblendError('TIMEOUT', `no "${type}" event within ${timeout} ms`))
+      }, timeout)
+      this.on(type, listener)
+    })
+  }
+
+  restart() {
+    return this.call('restart')
   }
 
   reply(message, text) {
@@ -434,6 +483,122 @@ export class SoblendClient extends Emitter {
 
   disappearingModes(...jids) {
     return this.call('disappearingModes', { jids: jids.flat().map(String) })
+  }
+
+  groupMetadata(chat) {
+    return this.call('groupMetadata', { chat: String(chat) })
+  }
+
+  groupCreate(subject, participants = []) {
+    return this.call('groupCreate', { subject, participants: list(participants) })
+  }
+
+  groupParticipants(chat, participants, action) {
+    return this.call('groupParticipants', { chat: String(chat), participants: list(participants), action })
+  }
+
+  groupAdd(chat, participants) {
+    return this.groupParticipants(chat, participants, 'add')
+  }
+
+  groupKick(chat, participants) {
+    return this.groupParticipants(chat, participants, 'remove')
+  }
+
+  groupPromote(chat, participants) {
+    return this.groupParticipants(chat, participants, 'promote')
+  }
+
+  groupDemote(chat, participants) {
+    return this.groupParticipants(chat, participants, 'demote')
+  }
+
+  groupSubject(chat, subject) {
+    return this.call('groupSubject', { chat: String(chat), subject })
+  }
+
+  groupDescription(chat, description = null) {
+    return this.call('groupDescription', { chat: String(chat), description })
+  }
+
+  groupSetting(chat, setting, value) {
+    return this.call('groupSetting', { chat: String(chat), setting, value })
+  }
+
+  groupPicture(chat, data) {
+    return this.call('groupPicture', { chat: String(chat), data: toBase64(data) })
+  }
+
+  groupLeave(chat) {
+    return this.call('groupLeave', { chat: String(chat) })
+  }
+
+  groupInviteCode(chat) {
+    return this.call('groupInviteCode', { chat: String(chat) })
+  }
+
+  groupRevokeInvite(chat) {
+    return this.call('groupRevokeInvite', { chat: String(chat) })
+  }
+
+  groupJoin(invite) {
+    return this.call('groupJoin', { invite: String(invite) })
+  }
+
+  groupInviteInfo(invite) {
+    return this.call('groupInviteInfo', { invite: String(invite) })
+  }
+
+  groupRequests(chat) {
+    return this.call('groupRequests', { chat: String(chat) })
+  }
+
+  groupRespondRequests(chat, participants, approve = true) {
+    return this.call('groupRespondRequests', { chat: String(chat), participants: list(participants), approve })
+  }
+
+  setProfilePicture(data, target = null) {
+    return this.call('setProfilePicture', { data: toBase64(data), target: target == null ? null : String(target) })
+  }
+
+  removeProfilePicture(target = null) {
+    return this.call('removeProfilePicture', { target: target == null ? null : String(target) })
+  }
+
+  setAbout(text) {
+    return this.call('setAbout', { text })
+  }
+
+  fetchAbout(...jids) {
+    return this.call('fetchAbout', { jids: list(jids) })
+  }
+
+  setPushName(name) {
+    return this.call('setPushName', { name })
+  }
+
+  businessProfile(jid) {
+    return this.call('businessProfile', { jid: String(jid) })
+  }
+
+  blocklist() {
+    return this.call('blocklist')
+  }
+
+  privacySettings() {
+    return this.call('privacySettings')
+  }
+
+  setPrivacy(setting, value) {
+    return this.call('setPrivacy', { setting, value })
+  }
+
+  lidForPhone(phone) {
+    return this.call('lidForPhone', { phone: String(phone) })
+  }
+
+  phoneForLid(lid) {
+    return this.call('phoneForLid', { lid: String(lid) })
   }
 }
 

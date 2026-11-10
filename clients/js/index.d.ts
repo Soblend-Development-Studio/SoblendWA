@@ -1,3 +1,93 @@
+export type ErrorCode =
+  | 'APPROVAL_REQUIRED'
+  | 'PRIVATE_PHOTO'
+  | 'MESSAGE_NOT_FOUND'
+  | 'NO_DEVICES'
+  | 'INVALID_ARGUMENT'
+  | 'RATE_LIMITED'
+  | 'ACCOUNT_BLOCKED'
+  | 'NOT_CONNECTED'
+  | 'NOT_LOGGED_IN'
+  | 'TIMEOUT'
+  | 'INVALID_JID'
+  | 'MEDIA_ERROR'
+  | 'STORE_ERROR'
+  | 'BAD_REQUEST'
+  | 'NOT_AUTHORIZED'
+  | 'FORBIDDEN'
+  | 'NOT_FOUND'
+  | 'NOT_ALLOWED'
+  | 'NOT_ACCEPTABLE'
+  | 'REQUEST_TIMEOUT'
+  | 'CONFLICT'
+  | 'GONE'
+  | 'RATE_OVERLIMIT'
+  | 'INTERNAL_SERVER_ERROR'
+  | 'NOT_IMPLEMENTED'
+  | 'SERVICE_UNAVAILABLE'
+  | 'SERVER_ERROR'
+  | (string & {})
+
+export declare class SoblendError extends Error {
+  readonly code: ErrorCode
+  readonly status: number | null
+}
+
+export interface Spread {
+  p50: number
+  p95: number
+  max: number
+}
+
+export interface TimingSummary {
+  samples: number
+  queuedMicros: Spread
+  uploadMicros: Spread | null
+  prepareMicros: Spread
+  encryptMicros: Spread
+  serverMicros: Spread | null
+  totalMicros: Spread
+}
+
+export interface GroupParticipant {
+  jid: string
+  phone_number: string | null
+  lid: string | null
+  is_admin: boolean
+  is_super_admin: boolean
+}
+
+export interface GroupInfo {
+  jid: string
+  subject: string
+  subject_owner: string | null
+  subject_time: number
+  owner: string | null
+  creation: number
+  description: string | null
+  description_id: string | null
+  announce: boolean
+  locked: boolean
+  ephemeral: number
+  addressing_mode: string
+  join_approval: boolean
+  members_can_add: boolean
+  linked_parent: string | null
+  is_community: boolean
+  is_community_announce: boolean
+  participants: GroupParticipant[]
+}
+
+export interface ParticipantChange {
+  jid: string
+  status: number
+  ok: boolean
+}
+
+export type GroupSetting = 'announce' | 'locked' | 'joinApproval' | 'memberAdd' | 'ephemeral'
+export type PrivacySetting = 'lastSeen' | 'online' | 'profilePicture' | 'about' | 'readReceipts' | 'groupsAdd' | 'calls' | 'messages'
+export type PrivacyValue = 'everyone' | 'contacts' | 'contactsExcept' | 'nobody' | 'matchLastSeen' | 'known'
+
 export interface ConnectOptions {
   session?: string
   token?: string
@@ -57,6 +147,8 @@ export interface SendTimings {
 }
 
 export interface Stats {
+  lost: number
+  sendTimings: TimingSummary
   connected: boolean
   uptimeSecs: number
   received: number
@@ -82,8 +174,8 @@ export interface LinkPreviewOverride {
   url?: string
   title?: string
   description?: string
-  thumbnail?: string
-  image?: string
+  thumbnail?: string | Uint8Array | ArrayBuffer
+  image?: string | Uint8Array | ArrayBuffer
   width?: number
   height?: number
   video?: boolean
@@ -120,7 +212,11 @@ export type SoblendEvent =
   | { type: 'pairSuccess'; id: string; lid: string | null; platform: string | null; businessName: string | null }
   | { type: 'connected' }
   | { type: 'disconnected'; reason: { type: string; detail?: string }; reconnecting: boolean }
-  | { type: 'loggedOut'; reason: string }
+  | { type: 'loggedOut'; reason: string; cause: 'removedFromPhone' | 'sessionInvalidated' | 'userLogout'; code: number | null }
+  | { type: 'messageLost'; id: string; chat: string; sender: string; error: string; waitedSecs: number }
+  | { type: 'joinedGroup'; group: string; author: string | null; via: 'created' | 'added' | 'invite' }
+  | { type: 'leftGroup'; group: string; author: string | null; removed: boolean }
+  | { type: 'lidMapping'; phone: string; lid: string }
   | { type: 'messageRecovered'; id: string; chat: string; sender: string }
   | { type: 'accountBlocked'; code: number; reason: string; expires: number | null }
   | { type: 'receipt'; chat: string; sender: string; ids: string[]; receipt: string; timestamp: number; fromMe: boolean }
@@ -139,6 +235,7 @@ export interface MediaOptions {
   viewOnce?: boolean
   seconds?: number
   quoted?: MessageEvent | string
+  mentions?: (string | number)[]
 }
 
 export interface ListSection {
@@ -197,7 +294,7 @@ export declare class SoblendClient {
   requestPairCode(phone: string | number): Promise<string>
   logout(): Promise<void>
 
-  sendText(chat: string, text: string, options?: { quoted?: MessageRef; preview?: boolean | LinkPreviewOverride }): Promise<string>
+  sendText(chat: string, text: string, options?: { quoted?: MessageRef; preview?: boolean | LinkPreviewOverride; mentions?: (string | number)[] }): Promise<string>
   reply(message: MessageRef, text: string): Promise<string>
   react(message: MessageRef, emoji: string): Promise<string>
   read(message: MessageRef): Promise<void>
@@ -226,8 +323,39 @@ export declare class SoblendClient {
   setMemberLabel(group: string, label: string): Promise<string>
   sendProto(chat: string, bytes: Bytes): Promise<string>
 
-  groupInfo(chat: string): Promise<Record<string, unknown>>
-  joinedGroups(): Promise<Record<string, unknown>[]>
+  groupInfo(chat: string): Promise<GroupInfo>
+  joinedGroups(): Promise<GroupInfo[]>
+  groupMetadata(chat: string): Promise<GroupInfo>
+  groupCreate(subject: string, participants?: (string | number)[]): Promise<GroupInfo>
+  groupParticipants(chat: string, participants: string | number | (string | number)[], action: 'add' | 'remove' | 'promote' | 'demote'): Promise<ParticipantChange[]>
+  groupAdd(chat: string, participants: string | number | (string | number)[]): Promise<ParticipantChange[]>
+  groupKick(chat: string, participants: string | number | (string | number)[]): Promise<ParticipantChange[]>
+  groupPromote(chat: string, participants: string | number | (string | number)[]): Promise<ParticipantChange[]>
+  groupDemote(chat: string, participants: string | number | (string | number)[]): Promise<ParticipantChange[]>
+  groupSubject(chat: string, subject: string): Promise<void>
+  groupDescription(chat: string, description?: string | null): Promise<void>
+  groupSetting(chat: string, setting: GroupSetting, value: boolean | number | 'all' | 'admins'): Promise<void>
+  groupPicture(chat: string, data: Uint8Array | ArrayBuffer | string): Promise<void>
+  groupLeave(chat: string): Promise<void>
+  groupInviteCode(chat: string): Promise<string>
+  groupRevokeInvite(chat: string): Promise<string>
+  groupJoin(invite: string): Promise<string>
+  groupInviteInfo(invite: string): Promise<GroupInfo>
+  groupRequests(chat: string): Promise<{ jid: string; method: string | null; requestedAt: number }[]>
+  groupRespondRequests(chat: string, participants: string | number | (string | number)[], approve?: boolean): Promise<ParticipantChange[]>
+  setProfilePicture(data: Uint8Array | ArrayBuffer | string, target?: string | null): Promise<void>
+  removeProfilePicture(target?: string | null): Promise<void>
+  setAbout(text: string): Promise<void>
+  fetchAbout(...jids: (string | string[])[]): Promise<{ jid: string; text: string | null; setAt: number }[]>
+  setPushName(name: string): Promise<void>
+  businessProfile(jid: string): Promise<{ jid: string | null; description: string; address: string | null; email: string | null; website: string | null; category: string | null } | null>
+  blocklist(): Promise<string[]>
+  privacySettings(): Promise<Record<string, string>>
+  setPrivacy(setting: PrivacySetting, value: PrivacyValue): Promise<void>
+  lidForPhone(phone: string | number): Promise<string | null>
+  phoneForLid(lid: string): Promise<string | null>
+  restart(): Promise<unknown>
+  waitFor<T = SoblendEvent>(type: string, filter?: ((event: T) => boolean) | null, timeout?: number): Promise<T>
   onWhatsApp(...phones: (string | number | (string | number)[])[]): Promise<{ query: string; jid: string; exists: boolean; lid: string | null }[]>
   profilePicture(jid: string, fullSize?: boolean): Promise<string | null>
   block(jid: string): Promise<void>

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { SoblendClient, connect } from './index.js'
+import { SoblendClient, SoblendError, connect } from './index.js'
 
 const url = process.env.SOBLENDWA_URL ?? 'ws://127.0.0.1:8787'
 const token = process.env.SOBLENDWA_TOKEN
@@ -13,8 +13,9 @@ assert.equal(bot.me, null)
 
 const status = await bot.status()
 assert.equal(status.connected, false)
-await assert.rejects(bot.sendText('5215511111111', 'hola'), /not logged in/)
-await assert.rejects(bot.call('nope'), /unknown method/)
+const coded = (code) => (error) => error instanceof SoblendError && error.code === code
+await assert.rejects(bot.sendText('5215511111111', 'hola'), coded('NOT_LOGGED_IN'))
+await assert.rejects(bot.call('nope'), coded('INVALID_ARGUMENT'))
 assert.deepEqual(await bot.chats(), [])
 
 const code = bot.qr ?? (await new Promise((resolve) => bot.once('qr', (event) => resolve(event.code))))
