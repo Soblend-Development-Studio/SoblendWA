@@ -97,7 +97,10 @@ Chats: `chats`, `contacts`, `messages`, `search`, `modify_chat`, `label_chat`, `
 `delete_label`, `save_quick_reply`.
 
 Sesión: `connect`, `run`, `restart`, `disconnect`, `logout`, `ping`, `stats`, `pending_sends`, `elapsed`,
-`request_pair_code`. Y `call("metodo", **params)` para cualquier método del despachador por nombre.
+`request_pair_code`, `wait_for(tipo, filtro=None, timeout=15)`. Y `call("metodo", **params)` para cualquier método del
+despachador por nombre.
+
+Varios archivos al mismo chat con `asyncio.gather` suben a la vez y llegan en el orden en que los llamaste.
 
 Los eventos son diccionarios con `type` y los mismos campos que en Node: `message`, `loggedOut` (con `cause`),
 `joinedGroup`, `leftGroup`, `messageRecovered`, `messageLost`, `lidMapping`, `chatUpdate`, etc.
@@ -120,6 +123,26 @@ except SoblendError as error:
 
 Códigos que vas a ver seguido: `APPROVAL_REQUIRED`, `PRIVATE_PHOTO`, `MESSAGE_NOT_FOUND`, `NO_DEVICES`, `INVALID_ARGUMENT`,
 `NOT_AUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `RATE_LIMITED`, `NOT_CONNECTED`, `TIMEOUT`.
+
+## Pruebas sin número
+
+`FakeWhatsApp` es un WhatsApp en memoria que habla el protocolo real, cifrado incluido. No toca ningún número:
+
+```python
+from soblendwa import FakeWhatsApp
+
+fake = await FakeWhatsApp.start()
+bot = await fake.connect("5215511111111")
+ana = await fake.connect("5215522222222")
+
+await ana.send_text("5215511111111", "!ping")
+message = await bot.wait_for("message", lambda m: m["text"] == "!ping")
+await bot.reply(message, "Pong")
+```
+
+También crea grupos (`create_group`, `set_join_approval`, `invite_code`) y provoca fallos: `drop_connections`,
+`refuse_connections`, `block`, `hold_acks`, `corrupt_next`, `expire_media`, `slow_uploads`. El ejemplo completo está en
+`test_fake.py`.
 
 ## Migrar desde Baileys
 

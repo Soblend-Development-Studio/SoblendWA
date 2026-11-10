@@ -132,6 +132,38 @@ async function main() {
     await second.close()
   })
 
+  await step('archivos seguidos suben juntos y llegan en orden', async () => {
+    const names = Array.from({ length: 6 }, (_, i) => `orden-${i}.bin`)
+    const closing = 'después de los archivos'
+    const arrived = []
+    const done = new Promise((resolve) => {
+      const listener = (m) => {
+        const label = m.media?.fileName ?? m.text
+        if (!names.includes(label) && label !== closing) return
+        arrived.push(label)
+        if (arrived.length === names.length + 1) {
+          ana.off('message', listener)
+          resolve()
+        }
+      }
+      ana.on('message', listener)
+    })
+    fake.slowUploads(250)
+    const started = Date.now()
+    await Promise.all([
+      ...names.map((fileName) =>
+        bot.sendDocument(ANA, require('node:crypto').randomBytes(32 * 1024), { fileName, mimetype: 'application/octet-stream' }),
+      ),
+      bot.sendText(ANA, closing),
+    ])
+    const elapsed = Date.now() - started
+    fake.slowUploads(0)
+    await done
+    assert.deepEqual(arrived, [...names, closing])
+    const oneByOne = 250 * names.length
+    assert.ok(elapsed < oneByOne, `one after another takes at least ${oneByOne} ms, this took ${elapsed} ms`)
+  })
+
   await step('métricas con tiempos por fase', async () => {
     const stats = bot.stats()
     assert.equal(typeof stats.lost, 'number')

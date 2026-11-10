@@ -269,16 +269,37 @@ impl Client {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn in_chat_lane<T>(&self, chat: &Jid, work: impl Future<Output = T>) -> (T, Duration) {
+        self.in_chat_lane_after(chat, std::future::ready(()), |()| work).await
+    }
+
+    // `early` runs while we wait for our place in the line, so six photos to one chat upload together and
+    // only their delivery is one after another. The place is taken on the first poll, same as before.
+    // The returned wait only counts the time `early` was already done, so queued + upload is still wall time.
+    pub(crate) async fn in_chat_lane_after<E, T, Fut>(
+        &self,
+        chat: &Jid,
+        early: impl Future<Output = E>,
+        work: impl FnOnce(E) -> Fut,
+    ) -> (T, Duration)
+    where
+        Fut: Future<Output = T>,
+    {
         let chat = chat.to_non_device();
         if LANE.try_with(|held| *held == chat).unwrap_or(false) {
-            return (work.await, Duration::ZERO);
+            return (work(early.await).await, Duration::ZERO);
         }
         let lane = self.inner.chat_lanes.entry(chat.clone()).or_insert_with(|| Arc::new(Default::default())).clone();
-        let waiting = Instant::now();
-        let guard = lane.lock_owned().await;
-        let queued = waiting.elapsed();
-        let result = LANE.scope(chat.clone(), work).await;
+        let ((guard, our_turn), (early, ready)) = tokio::join!(
+            async {
+                let guard = lane.lock_owned().await;
+                (guard, Instant::now())
+            },
+            async { (early.await, Instant::now()) },
+        );
+        let queued = our_turn.saturating_duration_since(ready);
+        let result = LANE.scope(chat.clone(), work(early)).await;
         drop(guard);
         self.inner.chat_lanes.remove_if(&chat, |_, lane| Arc::strong_count(lane) == 1);
         (result, queued)

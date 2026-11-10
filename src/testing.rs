@@ -71,6 +71,7 @@ struct World {
     held_acks: HashSet<String>,
     media: HashMap<String, Vec<u8>>,
     uploads: u64,
+    upload_delay: Duration,
     routed: u64,
 }
 
@@ -201,6 +202,10 @@ impl Shared {
                 chunked |= lower.starts_with("transfer-encoding:") && lower.contains("chunked");
             }
             let body = read_http_body(&mut reader, length, chunked).await?;
+            let delay = self.world.lock().upload_delay;
+            if method == "POST" && !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
             let (status, content_type, answer) = self.media_answer(&method, &path, body);
             let mut head = format!(
                 "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
@@ -840,6 +845,10 @@ impl FakeWhatsApp {
         self.shared.world.lock().media.clear();
     }
 
+    pub fn slow_uploads(&self, delay: Duration) {
+        self.shared.world.lock().upload_delay = delay;
+    }
+
     pub fn jid(phone: &str) -> Jid {
         Jid::phone(phone)
     }
@@ -984,6 +993,7 @@ impl FakeWhatsApp {
 mod tests {
     use super::*;
     use crate::events::{DisconnectReason, MessageEvent};
+    use crate::store::KeyKind;
     use crate::{SendLimit, SendTimings};
 
     const BOT: &str = "5215511111111";
@@ -1678,6 +1688,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retry_survives_restart() {
+        let fake = FakeWhatsApp::start().await.unwrap();
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        store.save_creds(&fake.account(BOT)).await.unwrap();
+        let builder = || fake.builder().store(store.clone()).retry_deadline(Duration::from_millis(800));
+        let (bot, mut bot_events) = fake.connect_with(builder()).await.unwrap();
+        let (ana, _ana_events) = fake.connect(ANA).await.unwrap();
+
+        fake.refuse_connections(BOT, true);
+        fake.corrupt_next(BOT, 1);
+        let id = ana.send_text(&Jid::phone(BOT), "¿sobrevive al reinicio?").await.unwrap();
+        fake.refuse_connections(ANA, true);
+        fake.refuse_connections(BOT, false);
+        next_event(&mut bot_events, |event| matches!(event, Event::UndecryptableMessage { .. }).then_some(())).await;
+        assert_eq!(bot.stats().awaiting_recovery, 1);
+
+        bot.disconnect().await;
+        drop((bot, bot_events));
+        let (bot, mut bot_events) = fake.connect_with(builder()).await.unwrap();
+        assert_eq!(bot.stats().awaiting_recovery, 1, "the pending retry must come back after a restart");
+
+        let lost = next_event(&mut bot_events, |event| match event {
+            Event::MessageLost { id, .. } => Some(id),
+            _ => None,
+        })
+        .await;
+        assert_eq!(lost, id);
+        assert_eq!(store.keys(KeyKind::AwaitingRetry).await.unwrap(), Vec::<String>::new());
+
+        fake.refuse_connections(ANA, false);
+        let recovered = next_event(&mut bot_events, |event| match event {
+            Event::MessageRecovered { id, .. } => Some(id),
+            _ => None,
+        })
+        .await;
+        assert_eq!(recovered, id);
+    }
+
+    #[tokio::test]
     async fn shared_media_store() {
         let fake = FakeWhatsApp::start().await.unwrap();
         let shared: Arc<dyn Store> = Arc::new(MemoryStore::new());
@@ -1704,6 +1753,49 @@ mod tests {
         let summary = bots[0].0.stats().send_timings;
         assert!(summary.samples >= 1);
         assert!(summary.total.max >= summary.total.p50 && summary.upload.is_some());
+    }
+
+    #[tokio::test]
+    async fn uploads_overlap_in_order() {
+        let fake = FakeWhatsApp::start().await.unwrap();
+        let (bot, _bot_events) = fake.connect(BOT).await.unwrap();
+        let (_ana, mut ana_events) = fake.connect(ANA).await.unwrap();
+        bot.send_text(&Jid::phone(ANA), "antes").await.unwrap();
+        next_text(&mut ana_events).await;
+        let delay = Duration::from_millis(250);
+        fake.slow_uploads(delay);
+
+        let files: Vec<Vec<u8>> = (0..6).map(|_| crate::crypto::random_vec(64 * 1024)).collect();
+        let chat = Jid::phone(ANA);
+        let started = std::time::Instant::now();
+        let documents = futures_util::future::try_join_all(files.iter().enumerate().map(|(i, data)| {
+            let options = crate::MediaOptions { file_name: Some(format!("{i}.bin")), ..Default::default() };
+            bot.send_media(&chat, data, crate::MediaKind::Document, options)
+        }));
+        let (documents, after) = tokio::join!(documents, bot.send_text(&chat, "después"));
+        let elapsed = started.elapsed();
+        documents.unwrap();
+        after.unwrap();
+
+        let mut arrived = Vec::new();
+        while arrived.len() < files.len() + 1 {
+            arrived.push(
+                next_event(&mut ana_events, |event| match event {
+                    Event::Message(m) => match &m.message.document_message {
+                        Some(document) => document.file_name.clone(),
+                        None => m.text().map(str::to_owned),
+                    },
+                    _ => None,
+                })
+                .await,
+            );
+        }
+        assert_eq!(arrived, ["0.bin", "1.bin", "2.bin", "3.bin", "4.bin", "5.bin", "después"]);
+        println!("6 uploads of {delay:?} each to one chat: {elapsed:?}");
+        let one_by_one = delay * files.len() as u32;
+        assert!(elapsed < one_by_one, "one upload after another takes at least {one_by_one:?}, this took {elapsed:?}");
+        let timings = bot.stats().send_timings;
+        assert!(timings.total.max < elapsed + Duration::from_millis(50), "{timings:?} vs {elapsed:?}");
     }
 
     #[tokio::test]

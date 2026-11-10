@@ -432,6 +432,21 @@ pub struct MediaInput {
     pub mentions: Vec<String>,
 }
 
+impl MediaInput {
+    fn media_options(&self) -> MediaOptions {
+        MediaOptions {
+            mimetype: self.mimetype.clone(),
+            caption: self.caption.clone(),
+            file_name: self.file_name.clone(),
+            voice_note: self.voice_note,
+            gif: self.gif,
+            view_once: self.view_once,
+            seconds: self.seconds,
+            ..Default::default()
+        }
+    }
+}
+
 pub fn parse_options(raw: Option<&str>) -> Result<Options> {
     match raw.map(str::trim).filter(|r| !r.is_empty()) {
         Some(raw) => serde_json::from_str(raw).map_err(Error::from),
@@ -500,6 +515,7 @@ struct Shared {
     recent: DashMap<String, Arc<MessageEvent>>,
     order: Mutex<VecDeque<String>>,
     turns: order::Turnstiles,
+    runtime: tokio::runtime::Handle,
 }
 
 #[derive(Clone)]
@@ -590,6 +606,7 @@ impl Session {
                 recent: DashMap::new(),
                 order: Mutex::new(VecDeque::with_capacity(RECENT_MESSAGES)),
                 turns: order::Turnstiles::default(),
+                runtime: tokio::runtime::Handle::current(),
             }),
         })
     }
@@ -789,36 +806,48 @@ impl Session {
         self.client().react(&original, emoji).await
     }
 
-    pub async fn send_media(&self, chat: &str, kind: &str, data: Vec<u8>, input: MediaInput) -> Result<String> {
-        let options = MediaOptions {
-            mimetype: input.mimetype,
-            caption: input.caption,
-            file_name: input.file_name,
-            voice_note: input.voice_note,
-            gif: input.gif,
-            view_once: input.view_once,
-            seconds: input.seconds,
-            ..Default::default()
-        };
-        let message = self.client().prepare_media(&data, media_kind(kind)?, options).await?;
-        let message = Self::mentioning(self.quoting(message, input.quoted_id.as_deref())?, &input.mentions)?;
-        self.client().send_message(&jid(chat)?, message).await
+    // Not async on purpose: the upload starts here, before the caller waits for its turn in the chat,
+    // and only the delivery keeps the order. Five photos in a row upload together.
+    pub fn send_media(
+        &self,
+        chat: &str,
+        kind: &str,
+        data: Vec<u8>,
+        input: MediaInput,
+    ) -> impl Future<Output = Result<String>> + Send + 'static {
+        let (client, kind, options) = (self.client().clone(), media_kind(kind), input.media_options());
+        let upload = self.shared.runtime.spawn(async move { client.prepare_media(&data, kind?, options).await });
+        self.deliver_upload(chat, upload, input)
     }
 
-    pub async fn send_media_file(&self, chat: &str, kind: &str, path: &str, input: MediaInput) -> Result<String> {
-        let options = MediaOptions {
-            mimetype: input.mimetype,
-            caption: input.caption,
-            file_name: input.file_name,
-            voice_note: input.voice_note,
-            gif: input.gif,
-            view_once: input.view_once,
-            seconds: input.seconds,
-            ..Default::default()
-        };
-        let message = self.client().prepare_media_file(path, media_kind(kind)?, options).await?;
-        let message = Self::mentioning(self.quoting(message, input.quoted_id.as_deref())?, &input.mentions)?;
-        self.client().send_message(&jid(chat)?, message).await
+    pub fn send_media_file(
+        &self,
+        chat: &str,
+        kind: &str,
+        path: &str,
+        input: MediaInput,
+    ) -> impl Future<Output = Result<String>> + Send + 'static {
+        let (client, kind, options, path) =
+            (self.client().clone(), media_kind(kind), input.media_options(), path.to_owned());
+        let upload = self.shared.runtime.spawn(async move { client.prepare_media_file(path, kind?, options).await });
+        self.deliver_upload(chat, upload, input)
+    }
+
+    fn deliver_upload(
+        &self,
+        chat: &str,
+        upload: tokio::task::JoinHandle<Result<Message>>,
+        input: MediaInput,
+    ) -> impl Future<Output = Result<String>> + Send + 'static {
+        let (session, chat) = (self.clone(), chat.to_owned());
+        async move {
+            let chat = jid(&chat)?;
+            let ready = async {
+                let message = upload.await.map_err(|err| Error::Other(format!("upload task failed: {err}")))??;
+                Self::mentioning(session.quoting(message, input.quoted_id.as_deref())?, &input.mentions)
+            };
+            session.client().send_prepared(&chat, ready).await
+        }
     }
 
     pub async fn download_to_file(&self, message_id: &str, path: &str) -> Result<u64> {

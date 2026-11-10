@@ -142,12 +142,7 @@ impl NativeClient {
     #[napi]
     pub fn call<'env>(&self, env: &'env Env, method: String, params: Option<Value>) -> Result<PromiseRaw<'env, Value>> {
         let params = params.unwrap_or(Value::Null);
-        ordered(
-            env,
-            &self.session,
-            self.session.turn(&method, &params),
-            |s| async move { s.call(&method, &params).await },
-        )
+        ordered(env, &self.session, self.session.turn(&method, &params), |s| s.begin(&method, params))
     }
 
     #[napi]
@@ -292,8 +287,8 @@ impl NativeClient {
     ) -> Result<PromiseRaw<'env, String>> {
         let data = data.to_vec();
         let input: bridge::MediaInput = parse(options)?;
-        ordered(env, &self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
-            s.send_media(&chat, &kind, data, input).await
+        ordered(env, &self.session, Some(self.session.turn_for_chat(&chat)), |s| {
+            s.send_media(&chat, &kind, data, input)
         })
     }
 
@@ -307,8 +302,8 @@ impl NativeClient {
         options: Option<Value>,
     ) -> Result<PromiseRaw<'env, String>> {
         let input: bridge::MediaInput = parse(options)?;
-        ordered(env, &self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
-            s.send_media_file(&chat, &kind, &path, input).await
+        ordered(env, &self.session, Some(self.session.turn_for_chat(&chat)), |s| {
+            s.send_media_file(&chat, &kind, &path, input)
         })
     }
 
@@ -637,6 +632,11 @@ impl FakeServer {
     #[napi]
     pub fn expire_media(&self) {
         self.fake.expire_media();
+    }
+
+    #[napi]
+    pub fn slow_uploads(&self, millis: u32) {
+        self.fake.slow_uploads(std::time::Duration::from_millis(u64::from(millis)));
     }
 
     #[napi]

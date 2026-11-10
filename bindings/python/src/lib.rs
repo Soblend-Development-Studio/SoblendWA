@@ -65,8 +65,10 @@ impl NativeClient {
             Some(raw) => serde_json::from_str(&raw).map_err(fail)?,
             None => serde_json::Value::Null,
         };
-        ordered(&self.session, self.session.turn(&method, &params), |s| async move {
-            s.call(&method, &params).await.map(|v| v.to_string())
+        let turn = self.session.turn(&method, &params);
+        ordered(&self.session, turn, |s| {
+            let pending = s.begin(&method, params);
+            async move { pending.await.map(|v| v.to_string()) }
         })
         .await
     }
@@ -167,10 +169,8 @@ impl NativeClient {
     #[pyo3(signature = (chat, kind, data, options = None))]
     async fn send_media(&self, chat: String, kind: String, data: Vec<u8>, options: Option<String>) -> PyResult<String> {
         let input = bridge::parse_media(options.as_deref()).map_err(fail)?;
-        ordered(&self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
-            s.send_media(&chat, &kind, data, input).await
-        })
-        .await
+        ordered(&self.session, Some(self.session.turn_for_chat(&chat)), |s| s.send_media(&chat, &kind, data, input))
+            .await
     }
 
     #[pyo3(signature = (chat, kind, path, options = None))]
@@ -182,8 +182,8 @@ impl NativeClient {
         options: Option<String>,
     ) -> PyResult<String> {
         let input = bridge::parse_media(options.as_deref()).map_err(fail)?;
-        ordered(&self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
-            s.send_media_file(&chat, &kind, &path, input).await
+        ordered(&self.session, Some(self.session.turn_for_chat(&chat)), |s| {
+            s.send_media_file(&chat, &kind, &path, input)
         })
         .await
     }
@@ -381,9 +381,123 @@ async fn import_baileys(source: String, target: Option<String>) -> PyResult<Stri
         .map_err(fail)
 }
 
+#[pyclass(frozen, name = "FakeServer", module = "soblendwa._native")]
+struct FakeServer {
+    fake: std::sync::Arc<bridge::FakeWhatsApp>,
+}
+
+#[pyfunction]
+async fn start_fake_server() -> PyResult<FakeServer> {
+    let fake = bridge::run(async { bridge::FakeWhatsApp::start().await }).await.map_err(fail)?;
+    Ok(FakeServer { fake: std::sync::Arc::new(fake) })
+}
+
+#[pymethods]
+impl FakeServer {
+    #[getter]
+    fn url(&self) -> String {
+        self.fake.url()
+    }
+
+    #[pyo3(signature = (phone, options = None))]
+    async fn open(&self, phone: String, options: Option<String>) -> PyResult<NativeClient> {
+        let mut value: serde_json::Value = match options.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
+            Some(raw) => serde_json::from_str(raw).map_err(fail)?,
+            None => serde_json::json!({}),
+        };
+        if let serde_json::Value::Object(fields) = &mut value {
+            fields.entry("store").or_insert_with(|| serde_json::json!({ "type": "memory" }));
+        }
+        let mut options: bridge::Options = serde_json::from_value(value).map_err(fail)?;
+        options.fake = Some(bridge::fake_link(&self.fake, &phone));
+        let session = bridge::run(Session::open(options)).await.map_err(fail)?;
+        Ok(NativeClient { session })
+    }
+
+    #[pyo3(signature = (subject, creator, members = Vec::new()))]
+    fn create_group(&self, subject: String, creator: String, members: Vec<String>) -> String {
+        let members: Vec<&str> = members.iter().map(String::as_str).collect();
+        self.fake.create_group(&subject, &creator, &members).to_string()
+    }
+
+    fn add_to_group(&self, group: String, by: String, phones: Vec<String>) -> PyResult<()> {
+        let group = bridge::jid(&group).map_err(fail)?;
+        let phones: Vec<&str> = phones.iter().map(String::as_str).collect();
+        self.fake.add_to_group(&group, &by, &phones);
+        Ok(())
+    }
+
+    fn remove_from_group(&self, group: String, by: String, phones: Vec<String>) -> PyResult<()> {
+        let group = bridge::jid(&group).map_err(fail)?;
+        let phones: Vec<&str> = phones.iter().map(String::as_str).collect();
+        self.fake.remove_from_group(&group, &by, &phones);
+        Ok(())
+    }
+
+    fn invite_code(&self, group: String) -> PyResult<Option<String>> {
+        Ok(self.fake.invite_code(&bridge::jid(&group).map_err(fail)?))
+    }
+
+    #[pyo3(signature = (group, enabled = true))]
+    fn set_join_approval(&self, group: String, enabled: bool) -> PyResult<()> {
+        self.fake.set_join_approval(&bridge::jid(&group).map_err(fail)?, enabled);
+        Ok(())
+    }
+
+    fn drop_connections(&self, phone: String) {
+        self.fake.drop_connections(&phone);
+    }
+
+    #[pyo3(signature = (phone, refuse = true))]
+    fn refuse_connections(&self, phone: String, refuse: bool) {
+        self.fake.refuse_connections(&phone, refuse);
+    }
+
+    #[pyo3(signature = (phone, code = 403))]
+    fn block(&self, phone: String, code: u16) {
+        self.fake.block(&phone, code);
+    }
+
+    fn unblock(&self, phone: String) {
+        self.fake.unblock(&phone);
+    }
+
+    #[pyo3(signature = (phone, hold = true))]
+    fn hold_acks(&self, phone: String, hold: bool) {
+        self.fake.hold_acks(&phone, hold);
+    }
+
+    #[pyo3(signature = (phone, messages = 1))]
+    fn corrupt_next(&self, phone: String, messages: u32) {
+        self.fake.corrupt_next(&phone, messages);
+    }
+
+    fn expire_media(&self) {
+        self.fake.expire_media();
+    }
+
+    fn slow_uploads(&self, seconds: f64) {
+        self.fake.slow_uploads(std::time::Duration::from_secs_f64(seconds.max(0.0)));
+    }
+
+    fn media_uploads(&self) -> u64 {
+        self.fake.media_uploads()
+    }
+
+    fn routed(&self) -> u64 {
+        self.fake.routed()
+    }
+
+    fn is_online(&self, phone: String) -> bool {
+        self.fake.is_online(&phone)
+    }
+}
+
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeClient>()?;
+    module.add_class::<FakeServer>()?;
+    module.add_function(wrap_pyfunction!(start_fake_server, module)?)?;
     module.add_function(wrap_pyfunction!(credits, module)?)?;
     module.add_function(wrap_pyfunction!(import_baileys, module)?)?;
     module.add("__version__", bridge::version())?;

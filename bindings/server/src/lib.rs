@@ -19,6 +19,8 @@ use soblendwa_bridge::{ChatStoreOptions, Options, Session, StoreOptions, METHODS
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc};
 
+mod metrics;
+
 const EVENT_BUFFER: usize = 4096;
 const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -242,6 +244,22 @@ async fn info(State(hub): State<Arc<Hub>>) -> Json<Value> {
     }))
 }
 
+async fn prometheus(
+    State(hub): State<Arc<Hub>>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if !hub.authorized(&headers, &query) {
+        return failure(StatusCode::UNAUTHORIZED, "UNAUTHORIZED", "missing or wrong token");
+    }
+    let sessions: Vec<Arc<Live>> = hub.sessions.lock().await.values().cloned().collect();
+    let mut stats: Vec<(String, soblendwa::Stats)> =
+        sessions.iter().map(|live| (live.name.clone(), live.session.client().stats())).collect();
+    stats.sort_by(|a, b| a.0.cmp(&b.0));
+    let body = metrics::render(&stats, metrics::resident_bytes());
+    ([(CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")], body).into_response()
+}
+
 async fn list_sessions(
     State(hub): State<Arc<Hub>>,
     headers: HeaderMap,
@@ -377,7 +395,7 @@ async fn client(live: Arc<Live>, socket: WebSocket) {
         let live = live.clone();
         let outgoing = outgoing.clone();
         tokio::spawn(async move {
-            let reply = match soblendwa_bridge::in_turn(turn, live.session.call(&method, &params)).await {
+            let reply = match soblendwa_bridge::in_turn(turn, live.session.begin(&method, params)).await {
                 Ok(result) => json!({ "id": id, "result": result }),
                 Err(err) => {
                     json!({ "id": id, "error": { "message": err.to_string(), "code": err.code(), "status": err.status() } })
@@ -393,6 +411,7 @@ pub fn router(hub: Arc<Hub>) -> Router {
     Router::new()
         .route("/", get(info))
         .route("/sessions", get(list_sessions))
+        .route("/metrics", get(prometheus))
         .route("/ws", get(upgrade))
         .route("/ws/{session}", get(upgrade))
         .route("/api/{session}", get(status))

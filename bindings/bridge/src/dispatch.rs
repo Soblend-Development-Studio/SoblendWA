@@ -1,3 +1,6 @@
+use std::future::Future;
+use std::pin::Pin;
+
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde::de::DeserializeOwned;
@@ -153,7 +156,36 @@ struct Pair {
     phone: Option<serde_json::Value>,
 }
 
+type Pending<T> = Pin<Box<dyn Future<Output = Result<T>> + Send>>;
+
 impl Session {
+    // call() for someone about to wait for their turn in a chat: media starts uploading right now instead of
+    // waiting in line too.
+    pub fn begin(&self, method: &str, params: Value) -> Pending<Value> {
+        let p = Params(&params);
+        let started = || -> Result<Option<Pending<String>>> {
+            Ok(match method {
+                "sendMedia" => {
+                    let input: MediaInput = p.parse()?;
+                    Some(Box::pin(self.send_media(&p.text("chat")?, &p.text("kind")?, p.bytes("data")?, input)))
+                }
+                "sendFile" => {
+                    let input: MediaInput = p.parse()?;
+                    Some(Box::pin(self.send_media_file(&p.text("chat")?, &p.text("kind")?, &p.text("path")?, input)))
+                }
+                _ => None,
+            })
+        };
+        match started() {
+            Ok(Some(sending)) => Box::pin(async move { done(sending.await?) }),
+            Err(err) => Box::pin(std::future::ready(Err(err))),
+            Ok(None) => {
+                let (session, method) = (self.clone(), method.to_owned());
+                Box::pin(async move { session.call(&method, &params).await })
+            }
+        }
+    }
+
     pub async fn call(&self, method: &str, params: &Value) -> Result<Value> {
         let p = Params(params);
         match method {

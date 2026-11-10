@@ -70,6 +70,16 @@ async fn http_api() {
     let (status, sessions) = http(address, "GET", "/sessions", Some(TOKEN), None).await;
     assert_eq!(status, 200);
     assert_eq!(sessions[0]["session"], "bot1");
+
+    let client = reqwest::Client::new();
+    let refused = client.get(format!("http://{address}/metrics")).send().await.unwrap();
+    assert_eq!(refused.status().as_u16(), 401);
+    let metrics = client.get(format!("http://{address}/metrics?token={TOKEN}")).send().await.unwrap();
+    assert_eq!(metrics.status().as_u16(), 200);
+    assert!(metrics.headers()["content-type"].to_str().unwrap().starts_with("text/plain"));
+    let text = metrics.text().await.unwrap();
+    assert!(text.contains("soblendwa_messages_received_total{session=\"bot1\"} 0"), "{text}");
+    assert!(text.contains("soblendwa_connected{session=\"bot1\"}"), "{text}");
 }
 
 async fn next_json<S>(stream: &mut S) -> Value

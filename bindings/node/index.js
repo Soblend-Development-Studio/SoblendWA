@@ -654,6 +654,10 @@ class FakeWhatsApp {
     return this.server.expireMedia()
   }
 
+  slowUploads(ms) {
+    return this.server.slowUploads(ms)
+  }
+
   mediaUploads() {
     return this.server.mediaUploads()
   }

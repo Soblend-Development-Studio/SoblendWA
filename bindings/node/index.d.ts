@@ -447,6 +447,7 @@ export declare class FakeWhatsApp {
   holdAcks(phone: string | number, hold?: boolean): void
   corruptNext(phone: string | number, messages?: number): void
   expireMedia(): void
+  slowUploads(ms: number): void
   mediaUploads(): number
   routed(): number
   isOnline(phone: string | number): boolean

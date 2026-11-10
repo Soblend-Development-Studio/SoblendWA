@@ -164,7 +164,19 @@ impl Client {
         chat: &Jid,
         work: impl std::future::Future<Output = Result<String>>,
     ) -> Result<String> {
-        let (result, queued) = self.in_chat_lane(chat, work).await;
+        self.send_in_lane_after(chat, std::future::ready(()), |()| work).await
+    }
+
+    pub(crate) async fn send_in_lane_after<E, Fut>(
+        &self,
+        chat: &Jid,
+        early: impl std::future::Future<Output = E>,
+        work: impl FnOnce(E) -> Fut,
+    ) -> Result<String>
+    where
+        Fut: std::future::Future<Output = Result<String>>,
+    {
+        let (result, queued) = self.in_chat_lane_after(chat, early, work).await;
         if let Ok(id) = &result {
             if !queued.is_zero() {
                 self.inner.sent.lock().note_queued(id, queued);

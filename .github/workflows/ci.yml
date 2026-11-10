@@ -54,6 +54,25 @@ jobs:
           name: soak-report
           path: soak.jsonl
 
+  bindings-on-fake:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: cargo build -p soblendwa-node && cp target/debug/libsoblendwa_node.so bindings/node/soblendwa.node
+      - run: node bindings/node/test-fake.js
+      - run: cargo build -p soblendwa-python --features extension-module && cp target/debug/lib_native.so bindings/python/python/soblendwa/_native.abi3.so
+      - run: python bindings/python/test_fake.py
+        env:
+          PYTHONPATH: bindings/python/python
+
   real-databases:
     runs-on: ubuntu-latest
     services:

@@ -6,16 +6,26 @@ import inspect
 import json
 import logging
 import re
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Optional, Union
 
 from ._native import NativeClient, __author__, __version__, credits
 from ._native import import_baileys as _import_baileys
+from ._native import start_fake_server as _start_fake_server
 
 Event = dict
 Handler = Callable[[Event], Union[Awaitable[None], None]]
 
-__all__ = ["SoblendWA", "SoblendError", "NativeClient", "import_baileys", "credits", "__version__", "__author__"]
+__all__ = [
+    "SoblendWA",
+    "SoblendError",
+    "FakeWhatsApp",
+    "NativeClient",
+    "import_baileys",
+    "credits",
+    "__version__",
+    "__author__",
+]
 
 _log = logging.getLogger("soblendwa")
 _CODED = re.compile(r"^\[([A-Z_]+)\] (.*)$", re.S)
@@ -117,6 +127,8 @@ class SoblendWA:
         self.native = _Guarded(native)
         self._handlers: dict[str, list[Handler]] = defaultdict(list)
         self._tasks: set[asyncio.Task] = set()
+        self._pending: deque = deque()
+        self._reading: Optional[asyncio.Future] = None
 
     @classmethod
     async def create(cls, **options: Any) -> "SoblendWA":
@@ -149,13 +161,40 @@ class SoblendWA:
         await self.native.connect()
         return self
 
+    # The native read runs on its own thread and can't be called back, so a timeout here must not drop
+    # it: the next reader picks up the same read instead of losing the batch it brings.
+    async def _refill(self) -> bool:
+        if self._reading is None:
+            self._reading = asyncio.ensure_future(self.native.next_events(256))
+        try:
+            raw = await asyncio.shield(self._reading)
+        finally:
+            if self._reading is not None and self._reading.done():
+                self._reading = None
+        if raw is None:
+            return False
+        self._pending.extend(json.loads(raw))
+        return True
+
     async def events(self) -> AsyncIterator[Event]:
         while True:
-            raw = await self.native.next_events(256)
-            if raw is None:
+            if not self._pending and not await self._refill():
                 return
-            for event in json.loads(raw):
-                yield event
+            yield self._pending.popleft()
+
+    async def wait_for(
+        self, kind: str, predicate: Optional[Callable[[Event], bool]] = None, timeout: float = 15.0
+    ) -> Event:
+        async def first() -> Event:
+            async for event in self.events():
+                if event["type"] == kind and (predicate is None or predicate(event)):
+                    return event
+            raise SoblendError("NOT_CONNECTED", f"the event stream ended before a {kind} event")
+
+        try:
+            return await asyncio.wait_for(first(), timeout)
+        except asyncio.TimeoutError:
+            raise SoblendError("TIMEOUT", f"no {kind} event within {timeout} s") from None
 
     async def run(self) -> None:
         await self.connect()
@@ -460,3 +499,80 @@ class SoblendWA:
 
     async def phone_for_lid(self, lid: str) -> Optional[str]:
         return await self.call("phoneForLid", lid=str(lid))
+
+
+def _phones(values: Iterable[Any]) -> list:
+    return [str(value) for value in values]
+
+
+class FakeWhatsApp:
+    """A WhatsApp server that lives in this process, for tests. Nothing leaves the machine."""
+
+    def __init__(self, server: Any):
+        self.server = _Guarded(server)
+
+    @classmethod
+    async def start(cls) -> "FakeWhatsApp":
+        return cls(await _settle(_start_fake_server()))
+
+    @staticmethod
+    def jid(phone: Union[str, int]) -> str:
+        return re.sub(r"\D", "", str(phone)) + "@s.whatsapp.net"
+
+    @property
+    def url(self) -> str:
+        return self.server.url
+
+    async def connect(self, phone: Union[str, int], **options: Any) -> SoblendWA:
+        bot = SoblendWA(await self.server.open(str(phone), _options(options)))
+        await bot.connect()
+        await bot.wait_for("connected", timeout=15)
+        return bot
+
+    def create_group(self, subject: str, creator: Union[str, int], members: Iterable[Any] = ()) -> str:
+        return self.server.create_group(subject, str(creator), _phones(members))
+
+    def add_to_group(self, group: str, by: Union[str, int], phones: Iterable[Any]) -> None:
+        self.server.add_to_group(str(group), str(by), _phones(phones))
+
+    def remove_from_group(self, group: str, by: Union[str, int], phones: Iterable[Any]) -> None:
+        self.server.remove_from_group(str(group), str(by), _phones(phones))
+
+    def invite_code(self, group: str) -> Optional[str]:
+        return self.server.invite_code(str(group))
+
+    def set_join_approval(self, group: str, enabled: bool = True) -> None:
+        self.server.set_join_approval(str(group), enabled)
+
+    def drop_connections(self, phone: Union[str, int]) -> None:
+        self.server.drop_connections(str(phone))
+
+    def refuse_connections(self, phone: Union[str, int], refuse: bool = True) -> None:
+        self.server.refuse_connections(str(phone), refuse)
+
+    def block(self, phone: Union[str, int], code: int = 403) -> None:
+        self.server.block(str(phone), code)
+
+    def unblock(self, phone: Union[str, int]) -> None:
+        self.server.unblock(str(phone))
+
+    def hold_acks(self, phone: Union[str, int], hold: bool = True) -> None:
+        self.server.hold_acks(str(phone), hold)
+
+    def corrupt_next(self, phone: Union[str, int], messages: int = 1) -> None:
+        self.server.corrupt_next(str(phone), messages)
+
+    def expire_media(self) -> None:
+        self.server.expire_media()
+
+    def slow_uploads(self, seconds: float) -> None:
+        self.server.slow_uploads(seconds)
+
+    def media_uploads(self) -> int:
+        return self.server.media_uploads()
+
+    def routed(self) -> int:
+        return self.server.routed()
+
+    def is_online(self, phone: Union[str, int]) -> bool:
+        return self.server.is_online(str(phone))

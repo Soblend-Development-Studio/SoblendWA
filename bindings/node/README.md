@@ -213,7 +213,8 @@ fake.corruptNext('5215511111111')
 ```
 
 También tiene `addToGroup`, `removeFromGroup`, `inviteCode`, `refuseConnections`, `block`, `holdAcks`, `expireMedia`,
-`mediaUploads`, `routed` e `isOnline`. `test-fake.js` es un buen ejemplo de uso.
+`slowUploads(ms)` (cada subida tarda eso), `mediaUploads`, `routed` e `isOnline`. `test-fake.js` es un buen ejemplo
+de uso.
 
 ## Migrar desde zapo o Baileys
 

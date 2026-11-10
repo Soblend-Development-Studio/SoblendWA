@@ -574,7 +574,9 @@ pub(super) fn media_message(kind: MediaKind, uploaded: UploadedMedia, options: M
 }
 
 impl Client {
-    pub(crate) async fn send_prepared(
+    // The chat's order is fixed on the first poll; `prepare` (usually an upload) keeps running while the
+    // messages ahead of it go out.
+    pub async fn send_prepared(
         &self,
         chat: &Jid,
         prepare: impl std::future::Future<Output = Result<Message>>,
@@ -582,13 +584,17 @@ impl Client {
         let chat = chat.to_non_device();
         self.admit_send(&chat)?;
         let id = crate::message::generate_message_id(Some(&self.require_me()?));
-        self.send_in_lane(&chat, async {
+        let upload = async {
             let clock = Instant::now();
-            let message = prepare.await?;
-            self.inner.upload_times.lock().insert(id.clone(), clock.elapsed());
+            (prepare.await, clock.elapsed())
+        };
+        let (id, target) = (&id, &chat);
+        self.send_in_lane_after(&chat, upload, move |(message, took)| async move {
+            let message = message?;
+            self.inner.upload_times.lock().insert(id.clone(), took);
             let options = super::SendOptions { id: Some(id.clone()), ..Default::default() };
-            let sent = Box::pin(self.deliver(&chat, message, options, false)).await;
-            self.inner.upload_times.lock().remove(&id);
+            let sent = Box::pin(self.deliver(target, message, options, false)).await;
+            self.inner.upload_times.lock().remove(id);
             sent
         })
         .await
