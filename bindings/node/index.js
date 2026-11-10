@@ -28,6 +28,63 @@ function loadNative() {
 
 const native = loadNative()
 
+class SoblendError extends Error {
+  constructor(code, message, status = null) {
+    super(message)
+    this.name = 'SoblendError'
+    this.code = code
+    this.status = status
+  }
+}
+
+const CODED = /^\[([A-Z_]+)\] ([\s\S]*)$/
+
+function translate(error) {
+  const match = typeof error?.message === 'string' ? CODED.exec(error.message) : null
+  if (!match) return error
+  const status = /error (\d{3})/.exec(match[2])
+  return new SoblendError(match[1], match[2], status ? Number(status[1]) : null)
+}
+
+function guard(target) {
+  return new Proxy(target, {
+    get(object, property) {
+      const value = Reflect.get(object, property, object)
+      if (typeof value !== 'function') return value
+      return (...args) => {
+        try {
+          const result = value.apply(object, args)
+          return result && typeof result.then === 'function'
+            ? result.catch((error) => {
+                throw translate(error)
+              })
+            : result
+        } catch (error) {
+          throw translate(error)
+        }
+      }
+    },
+  })
+}
+
+function bytes(data) {
+  if (typeof data === 'string') return data
+  return Buffer.from(data).toString('base64')
+}
+
+function list(values) {
+  return [values].flat(Infinity).filter((value) => value != null).map(String)
+}
+
+function previewOption(preview) {
+  if (preview === undefined || preview === null || typeof preview === 'boolean') return preview ?? null
+  const normalized = { ...preview }
+  for (const key of ['thumbnail', 'image']) {
+    if (normalized[key] != null && typeof normalized[key] !== 'string') normalized[key] = bytes(normalized[key])
+  }
+  return normalized
+}
+
 function isCustomStore(store) {
   return Boolean(store) && typeof store.get === 'function'
 }
@@ -75,7 +132,7 @@ class SoblendWA extends EventEmitter {
   }
 
   stats() {
-    return this.native.stats()
+    return JSON.parse(this.native.statsJson())
   }
 
   pendingSends() {
@@ -83,9 +140,57 @@ class SoblendWA extends EventEmitter {
   }
 
   constructor(client) {
-    super()
-    this.native = client
+    super({ captureRejections: true })
+    this.native = guard(client)
     this.pumping = false
+    this.closed = false
+  }
+
+  [Symbol.for('nodejs.rejection')](error) {
+    this.report(error)
+  }
+
+  report(error) {
+    if (this.listenerCount('error') > 0) {
+      try {
+        super.emit('error', error)
+        return
+      } catch (thrown) {
+        error = thrown
+      }
+    }
+    console.error('[SoblendWA]', error)
+  }
+
+  deliver(type, event) {
+    for (const listener of this.rawListeners(type)) {
+      try {
+        const result = listener.call(this, event)
+        if (result && typeof result.then === 'function') result.then(null, (error) => this.report(error))
+      } catch (error) {
+        this.report(error)
+      }
+    }
+  }
+
+  waitFor(type, filter = null, timeout = 30000) {
+    return new Promise((resolve, reject) => {
+      const listener = (event) => {
+        if (filter && !filter(event)) return
+        clearTimeout(timer)
+        this.off(type, listener)
+        resolve(event)
+      }
+      const timer = setTimeout(() => {
+        this.off(type, listener)
+        reject(new SoblendError('TIMEOUT', `no "${type}" event within ${timeout} ms`))
+      }, timeout)
+      this.on(type, listener)
+    })
+  }
+
+  call(method, params = {}) {
+    return this.native.call(method, params)
   }
 
   get me() {
@@ -106,14 +211,16 @@ class SoblendWA extends EventEmitter {
     if (this.pumping) return
     this.pumping = true
     try {
-      for (;;) {
-        const event = await this.native.nextEvent()
-        if (!event) break
-        this.emit(event.type, event)
-        this.emit('event', event)
+      while (!this.closed) {
+        const raw = await this.native.nextEvents(256)
+        if (raw === null) break
+        for (const event of JSON.parse(raw)) {
+          this.deliver(event.type, event)
+          this.deliver('event', event)
+        }
       }
     } catch (error) {
-      this.emit('error', error)
+      this.report(error)
     } finally {
       this.pumping = false
     }
@@ -121,14 +228,26 @@ class SoblendWA extends EventEmitter {
 
   async *events() {
     for (;;) {
-      const event = await this.native.nextEvent()
-      if (!event) return
-      yield event
+      const raw = await this.native.nextEvents(256)
+      if (raw === null) return
+      yield* JSON.parse(raw)
     }
   }
 
   disconnect() {
     return this.native.disconnect()
+  }
+
+  async restart() {
+    await this.native.call('restart', {})
+    this.pump()
+    return this
+  }
+
+  async close() {
+    this.closed = true
+    await this.native.disconnect()
+    this.removeAllListeners()
   }
 
   logout() {
@@ -147,9 +266,14 @@ class SoblendWA extends EventEmitter {
     return this.native.requestPairCode(String(phone))
   }
 
-  sendText(chat, text, { quoted, preview } = {}) {
-    if (preview === undefined) return this.native.sendText(chat, text, quoted ?? null)
-    return this.native.sendTextChoosingPreview(chat, text, quoted ?? null, preview)
+  sendText(chat, text, { quoted, preview, mentions } = {}) {
+    return this.native.call('sendText', {
+      chat: String(chat),
+      text,
+      quotedId: quoted ? idOf(quoted) : null,
+      preview: previewOption(preview),
+      mentions: mentions ? list(mentions) : null,
+    })
   }
 
   sendProto(chat, bytes) {
@@ -184,12 +308,14 @@ class SoblendWA extends EventEmitter {
     return this.sendMedia(chat, 'sticker', data, options)
   }
 
-  sendMedia(chat, kind, data, { quoted, ...options } = {}) {
-    return this.native.sendMedia(chat, kind, Buffer.from(data), { ...options, quotedId: quoted ? idOf(quoted) : null })
+  sendMedia(chat, kind, data, { quoted, mentions, ...options } = {}) {
+    const extra = { ...options, quotedId: quoted ? idOf(quoted) : null, mentions: mentions ? list(mentions) : [] }
+    return this.native.sendMedia(chat, kind, Buffer.from(data), extra)
   }
 
-  sendFile(chat, kind, path, { quoted, ...options } = {}) {
-    return this.native.sendMediaFile(chat, kind, String(path), { ...options, quotedId: quoted ? idOf(quoted) : null })
+  sendFile(chat, kind, path, { quoted, mentions, ...options } = {}) {
+    const extra = { ...options, quotedId: quoted ? idOf(quoted) : null, mentions: mentions ? list(mentions) : [] }
+    return this.native.sendMediaFile(chat, kind, String(path), extra)
   }
 
   download(message) {
@@ -335,6 +461,208 @@ class SoblendWA extends EventEmitter {
   unblock(jid) {
     return this.native.block(jid, false)
   }
+
+  groupMetadata(chat) {
+    return this.call('groupMetadata', { chat: String(chat) })
+  }
+
+  groupCreate(subject, participants = []) {
+    return this.call('groupCreate', { subject, participants: list(participants) })
+  }
+
+  groupParticipants(chat, participants, action) {
+    return this.call('groupParticipants', { chat: String(chat), participants: list(participants), action })
+  }
+
+  groupAdd(chat, participants) {
+    return this.groupParticipants(chat, participants, 'add')
+  }
+
+  groupKick(chat, participants) {
+    return this.groupParticipants(chat, participants, 'remove')
+  }
+
+  groupPromote(chat, participants) {
+    return this.groupParticipants(chat, participants, 'promote')
+  }
+
+  groupDemote(chat, participants) {
+    return this.groupParticipants(chat, participants, 'demote')
+  }
+
+  groupSubject(chat, subject) {
+    return this.call('groupSubject', { chat: String(chat), subject })
+  }
+
+  groupDescription(chat, description = null) {
+    return this.call('groupDescription', { chat: String(chat), description })
+  }
+
+  groupSetting(chat, setting, value) {
+    return this.call('groupSetting', { chat: String(chat), setting, value })
+  }
+
+  groupPicture(chat, data) {
+    return this.call('groupPicture', { chat: String(chat), data: bytes(data) })
+  }
+
+  groupLeave(chat) {
+    return this.call('groupLeave', { chat: String(chat) })
+  }
+
+  groupInviteCode(chat) {
+    return this.call('groupInviteCode', { chat: String(chat) })
+  }
+
+  groupRevokeInvite(chat) {
+    return this.call('groupRevokeInvite', { chat: String(chat) })
+  }
+
+  groupJoin(invite) {
+    return this.call('groupJoin', { invite: String(invite) })
+  }
+
+  groupInviteInfo(invite) {
+    return this.call('groupInviteInfo', { invite: String(invite) })
+  }
+
+  groupRequests(chat) {
+    return this.call('groupRequests', { chat: String(chat) })
+  }
+
+  groupRespondRequests(chat, participants, approve = true) {
+    return this.call('groupRespondRequests', { chat: String(chat), participants: list(participants), approve })
+  }
+
+  setProfilePicture(data, target = null) {
+    return this.call('setProfilePicture', { data: bytes(data), target: target == null ? null : String(target) })
+  }
+
+  removeProfilePicture(target = null) {
+    return this.call('removeProfilePicture', { target: target == null ? null : String(target) })
+  }
+
+  setAbout(text) {
+    return this.call('setAbout', { text })
+  }
+
+  fetchAbout(...jids) {
+    return this.call('fetchAbout', { jids: list(jids) })
+  }
+
+  setPushName(name) {
+    return this.call('setPushName', { name })
+  }
+
+  businessProfile(jid) {
+    return this.call('businessProfile', { jid: String(jid) })
+  }
+
+  blocklist() {
+    return this.call('blocklist', {})
+  }
+
+  privacySettings() {
+    return this.call('privacySettings', {})
+  }
+
+  setPrivacy(setting, value) {
+    return this.call('setPrivacy', { setting, value })
+  }
+
+  lidForPhone(phone) {
+    return this.call('lidForPhone', { phone: String(phone) })
+  }
+
+  phoneForLid(lid) {
+    return this.call('phoneForLid', { lid: String(lid) })
+  }
+}
+
+class FakeWhatsApp {
+  static async start() {
+    return new FakeWhatsApp(await native.startFakeServer())
+  }
+
+  static jid(phone) {
+    return `${String(phone).replace(/\D/g, '')}@s.whatsapp.net`
+  }
+
+  constructor(server) {
+    this.server = guard(server)
+  }
+
+  get url() {
+    return this.server.url
+  }
+
+  async connect(phone, options = {}) {
+    const bot = new SoblendWA(await this.server.open(String(phone), options))
+    const ready = bot.waitFor('connected', null, 15000)
+    await bot.connect()
+    await ready
+    return bot
+  }
+
+  createGroup(subject, creator, members = []) {
+    return this.server.createGroup(subject, String(creator), list(members))
+  }
+
+  addToGroup(group, by, phones) {
+    return this.server.addToGroup(String(group), String(by), list(phones))
+  }
+
+  removeFromGroup(group, by, phones) {
+    return this.server.removeFromGroup(String(group), String(by), list(phones))
+  }
+
+  inviteCode(group) {
+    return this.server.inviteCode(String(group))
+  }
+
+  setJoinApproval(group, enabled = true) {
+    return this.server.setJoinApproval(String(group), enabled)
+  }
+
+  dropConnections(phone) {
+    return this.server.dropConnections(String(phone))
+  }
+
+  refuseConnections(phone, refuse = true) {
+    return this.server.refuseConnections(String(phone), refuse)
+  }
+
+  block(phone, code = 403) {
+    return this.server.block(String(phone), code)
+  }
+
+  unblock(phone) {
+    return this.server.unblock(String(phone))
+  }
+
+  holdAcks(phone, hold = true) {
+    return this.server.holdAcks(String(phone), hold)
+  }
+
+  corruptNext(phone, messages = 1) {
+    return this.server.corruptNext(String(phone), messages)
+  }
+
+  expireMedia() {
+    return this.server.expireMedia()
+  }
+
+  mediaUploads() {
+    return this.server.mediaUploads()
+  }
+
+  routed() {
+    return this.server.routed()
+  }
+
+  isOnline(phone) {
+    return this.server.isOnline(String(phone))
+  }
 }
 
 function idOf(message) {
@@ -343,11 +671,29 @@ function idOf(message) {
 }
 
 function importBaileys(source, target = { type: 'file', path: 'session' }) {
-  return native.importBaileys(String(source), target)
+  return native.importBaileys(String(source), target).catch((error) => {
+    throw translate(error)
+  })
+}
+
+function importZapo(source, target = null, { check = false } = {}) {
+  return native.importZapo(source, target, check).catch((error) => {
+    throw translate(error)
+  })
+}
+
+function rollbackZapo(source, target) {
+  return native.rollbackZapo(source, target).catch((error) => {
+    throw translate(error)
+  })
 }
 
 module.exports = {
   SoblendWA,
+  importZapo,
+  rollbackZapo,
+  FakeWhatsApp,
+  SoblendError,
   NativeClient: native.NativeClient,
   importBaileys,
   credits: native.credits,

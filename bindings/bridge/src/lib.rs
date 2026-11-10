@@ -8,7 +8,7 @@ use base64::Engine as _;
 
 use dashmap::DashMap;
 use parking_lot::Mutex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use soblendwa::interactive::{Interactive, NativeButton, Section};
 use soblendwa::store::{
@@ -18,17 +18,62 @@ use soblendwa::{
     ChatPresence, ChatStore, Client, Error, Event, EventStream, FileStore, Jid, MediaKind, MediaOptions, MemoryStore,
     Message, MessageEvent, Platform, Proxy, Result, Store,
 };
-use soblendwa::{LinkPreview, LinkPreviewConfig, PreviewChoice};
+use soblendwa::{LinkPreview, LinkPreviewConfig, PreviewChoice, SendLimit};
 
 mod dispatch;
+mod ops;
+mod order;
+mod zapo;
 
 pub use async_trait::async_trait;
 pub use dispatch::METHODS;
+pub use order::Turn;
+pub use soblendwa::testing::FakeWhatsApp;
 pub use soblendwa::Result as Outcome;
+pub use zapo::{import_zapo, rollback_zapo, ZapoSource};
+
+pub trait Describe {
+    fn describe(&self) -> String;
+}
+
+impl Describe for Error {
+    fn describe(&self) -> String {
+        format!("[{}] {self}", self.code())
+    }
+}
+
+impl Describe for serde_json::Error {
+    fn describe(&self) -> String {
+        format!("[INVALID_ARGUMENT] {self}")
+    }
+}
+
+static SHARED_STORES: LazyLock<tokio::sync::Mutex<std::collections::HashMap<String, Arc<dyn Store>>>> =
+    LazyLock::new(Default::default);
+
+async fn shared_store(options: &StoreOptions) -> Result<Arc<dyn Store>> {
+    let key = serde_json::to_string(options)?;
+    let mut stores = SHARED_STORES.lock().await;
+    if let Some(store) = stores.get(&key) {
+        return Ok(store.clone());
+    }
+    let store = open_store(options).await?;
+    stores.insert(key, store.clone());
+    Ok(store)
+}
+
+pub fn fake_link(fake: &FakeWhatsApp, phone: &str) -> FakeLink {
+    FakeLink {
+        url: fake.url(),
+        media_endpoint: fake.media_endpoint(),
+        trust_root: fake.trust_root(),
+        creds: fake.account(phone),
+    }
+}
 
 const RECENT_MESSAGES: usize = 4096;
 
-static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+pub(crate) static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("soblendwa")
@@ -45,7 +90,16 @@ where
     async move { task.await.map_err(|err| Error::Other(format!("background task failed: {err}")))? }
 }
 
-#[derive(Deserialize, Debug, Clone)]
+pub async fn in_turn<T>(turn: Option<Turn>, work: impl Future<Output = T>) -> T {
+    if let Some(turn) = &turn {
+        turn.ready().await;
+    }
+    let out = work.await;
+    drop(turn);
+    out
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum StoreOptions {
     Memory,
@@ -76,10 +130,51 @@ pub struct Options {
     pub chat_store: Option<ChatStoreOptions>,
     pub link_previews: Option<LinkPreviewOptions>,
     pub server: Option<ServerOverride>,
+    pub media_store: Option<StoreOptions>,
+    pub retry_deadline_secs: Option<u64>,
+    pub send_limit: Option<SendLimitOptions>,
     #[serde(skip)]
     pub fake: Option<FakeLink>,
     #[serde(skip)]
     pub custom_store: Option<CustomStore>,
+}
+
+pub struct EventText {
+    pub kind: &'static str,
+    pub qr: Option<String>,
+    pub json: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum SendLimitOptions {
+    Enabled(bool),
+    Custom(SendLimitValues),
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SendLimitValues {
+    pub per_minute: Option<u32>,
+    pub burst: Option<u32>,
+    pub per_chat_per_minute: Option<u32>,
+    pub per_chat_burst: Option<u32>,
+}
+
+impl SendLimitOptions {
+    fn limit(&self) -> Option<SendLimit> {
+        let base = SendLimit::default();
+        match self {
+            SendLimitOptions::Enabled(false) => None,
+            SendLimitOptions::Enabled(true) => Some(base),
+            SendLimitOptions::Custom(values) => Some(SendLimit {
+                per_minute: values.per_minute.unwrap_or(base.per_minute),
+                burst: values.burst.unwrap_or(base.burst),
+                per_chat_per_minute: values.per_chat_per_minute.unwrap_or(base.per_chat_per_minute),
+                per_chat_burst: values.per_chat_burst.unwrap_or(base.per_chat_burst),
+            }),
+        }
+    }
 }
 
 #[derive(Deserialize, Debug, Clone, Default)]
@@ -334,6 +429,7 @@ pub struct MediaInput {
     pub view_once: bool,
     pub seconds: Option<u32>,
     pub quoted_id: Option<String>,
+    pub mentions: Vec<String>,
 }
 
 pub fn parse_options(raw: Option<&str>) -> Result<Options> {
@@ -384,7 +480,7 @@ fn media_kind(name: &str) -> Result<MediaKind> {
     })
 }
 
-async fn open_store(options: &StoreOptions) -> Result<Arc<dyn Store>> {
+pub(crate) async fn open_store(options: &StoreOptions) -> Result<Arc<dyn Store>> {
     let account = |a: &Option<String>| a.clone().unwrap_or_else(|| "default".into());
     Ok(match options {
         StoreOptions::Memory => Arc::new(MemoryStore::new()),
@@ -403,6 +499,7 @@ struct Shared {
     events: tokio::sync::Mutex<EventStream>,
     recent: DashMap<String, Arc<MessageEvent>>,
     order: Mutex<VecDeque<String>>,
+    turns: order::Turnstiles,
 }
 
 #[derive(Clone)]
@@ -447,6 +544,15 @@ impl Session {
         if let Some(previews) = &options.link_previews {
             builder = builder.link_previews(previews.config());
         }
+        if let Some(media) = &options.media_store {
+            builder = builder.media_store(shared_store(media).await?);
+        }
+        if let Some(seconds) = options.retry_deadline_secs {
+            builder = builder.retry_deadline(Duration::from_secs(seconds));
+        }
+        if let Some(limit) = &options.send_limit {
+            builder = builder.send_limit(limit.limit());
+        }
         if let Some(proxy) = &options.proxy {
             builder = builder.proxy(Proxy::parse(proxy)?);
         }
@@ -483,8 +589,26 @@ impl Session {
                 events: tokio::sync::Mutex::new(events),
                 recent: DashMap::new(),
                 order: Mutex::new(VecDeque::with_capacity(RECENT_MESSAGES)),
+                turns: order::Turnstiles::default(),
             }),
         })
+    }
+
+    pub fn turn(&self, method: &str, params: &Value) -> Option<Turn> {
+        match method {
+            "reply" | "react" => self.turn_for_message(params["messageId"].as_str()?),
+            _ => order::chat_of(method, params).map(|chat| self.turn_for_chat(&chat)),
+        }
+    }
+
+    pub fn turn_for_chat(&self, chat: &str) -> Turn {
+        let key = jid(chat).map(|j| j.to_string()).unwrap_or_else(|_| chat.to_owned());
+        self.shared.turns.take(key)
+    }
+
+    pub fn turn_for_message(&self, id: &str) -> Option<Turn> {
+        let chat = self.recall(id).ok()?.info.chat.to_string();
+        Some(self.shared.turns.take(chat))
     }
 
     pub fn client(&self) -> &Client {
@@ -513,10 +637,53 @@ impl Session {
 
     pub async fn next_event(&self) -> Option<Value> {
         let event = self.shared.events.lock().await.recv().await?;
-        if let Event::Message(message) = &event {
-            self.remember(Arc::new(message.as_ref().clone()));
+        let json = event.to_json();
+        self.keep(event);
+        Some(json)
+    }
+
+    pub async fn next_event_text(&self) -> Option<EventText> {
+        let event = self.shared.events.lock().await.recv().await?;
+        let text = EventText {
+            kind: event.kind(),
+            qr: match &event {
+                Event::Qr(code) => Some(code.clone()),
+                _ => None,
+            },
+            json: event.to_json_string(),
+        };
+        self.keep(event);
+        Some(text)
+    }
+
+    pub async fn next_events_json(&self, max: usize) -> Option<String> {
+        let mut stream = self.shared.events.lock().await;
+        let first = stream.recv().await?;
+        let mut batch = vec![first];
+        while batch.len() < max {
+            match stream.try_recv() {
+                Ok(event) => batch.push(event),
+                Err(_) => break,
+            }
         }
-        Some(event.to_json())
+        drop(stream);
+        let mut out = String::with_capacity(batch.len() * 512 + 2);
+        out.push('[');
+        for (index, event) in batch.into_iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str(&event.to_json_string());
+            self.keep(event);
+        }
+        out.push(']');
+        Some(out)
+    }
+
+    fn keep(&self, event: Event) {
+        if let Event::Message(message) = event {
+            self.remember(Arc::from(message));
+        }
     }
 
     fn remember(&self, message: Arc<MessageEvent>) {
@@ -541,7 +708,7 @@ impl Session {
             .chats()
             .and_then(|chats| chats.find_message(id))
             .map(|stored| Arc::new(stored.to_event()))
-            .ok_or_else(|| Error::Other(format!("message {id} is not among the recent messages")))
+            .ok_or_else(|| Error::MessageNotFound(id.to_owned()))
     }
 
     fn quoting(&self, message: Message, quoted: Option<&str>) -> Result<Message> {
@@ -549,6 +716,27 @@ impl Session {
             Some(id) => Ok(message.reply_to(self.recall(id)?.as_ref())),
             None => Ok(message),
         }
+    }
+
+    fn mentioning(message: Message, mentions: &[String]) -> Result<Message> {
+        if mentions.is_empty() {
+            return Ok(message);
+        }
+        let people = mentions.iter().map(|m| jid(m)).collect::<Result<Vec<_>>>()?;
+        Ok(message.mention(people.iter()))
+    }
+
+    pub async fn send_text_full(
+        &self,
+        chat: &str,
+        text: &str,
+        quoted: Option<&str>,
+        preview: &Value,
+        mentions: &[String],
+    ) -> Result<String> {
+        let message = Self::mentioning(self.quoting(Message::text(text), quoted)?, mentions)?;
+        let options = soblendwa::SendOptions { link_preview: preview_choice(preview)?, ..Default::default() };
+        self.client().send_message_with(&jid(chat)?, message, options).await
     }
 
     pub fn elapsed_ms(&self, message_id: &str) -> Option<f64> {
@@ -611,7 +799,7 @@ impl Session {
             ..Default::default()
         };
         let message = self.client().prepare_media(&data, media_kind(kind)?, options).await?;
-        let message = self.quoting(message, input.quoted_id.as_deref())?;
+        let message = Self::mentioning(self.quoting(message, input.quoted_id.as_deref())?, &input.mentions)?;
         self.client().send_message(&jid(chat)?, message).await
     }
 
@@ -627,7 +815,7 @@ impl Session {
             ..Default::default()
         };
         let message = self.client().prepare_media_file(path, media_kind(kind)?, options).await?;
-        let message = self.quoting(message, input.quoted_id.as_deref())?;
+        let message = Self::mentioning(self.quoting(message, input.quoted_id.as_deref())?, &input.mentions)?;
         self.client().send_message(&jid(chat)?, message).await
     }
 
@@ -907,7 +1095,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepts_plain_numbers_and_full_jids() {
+    fn numbers_and_jids() {
         assert_eq!(jid("+52 1 55 1234 5678").unwrap().to_string(), "5215512345678@s.whatsapp.net");
         assert_eq!(jid("120363000000000001@g.us").unwrap().to_string(), "120363000000000001@g.us");
         assert!(jid("hola").is_err());
@@ -923,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn sessions_open_on_the_shared_runtime() {
+    fn shared_runtime() {
         let session = RUNTIME
             .block_on(run(async { Session::open(Options { store: StoreOptions::Memory, ..Default::default() }).await }))
             .unwrap();

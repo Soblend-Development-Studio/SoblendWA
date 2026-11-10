@@ -8,11 +8,14 @@ use soblendwa_server::{fake_phone, serve, Hub, ServerConfig, Storage};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "soblendwa-server",
     version,
-    about = "WhatsApp for any language, over WebSocket and HTTP. Crafted by Soblend Development Studio."
+    about = "WhatsApp for any language, over WebSocket and HTTP. By Soblend Development Studio."
 )]
 struct Args {
     #[arg(long, default_value = "127.0.0.1", env = "SOBLENDWA_HOST")]

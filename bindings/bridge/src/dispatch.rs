@@ -59,13 +59,39 @@ pub const METHODS: &[&str] = &[
     "reachoutTimelock",
     "newChatMessageCap",
     "disappearingModes",
+    "restart",
+    "groupMetadata",
+    "groupCreate",
+    "groupParticipants",
+    "groupSubject",
+    "groupDescription",
+    "groupSetting",
+    "groupPicture",
+    "groupLeave",
+    "groupInviteCode",
+    "groupRevokeInvite",
+    "groupJoin",
+    "groupInviteInfo",
+    "groupRequests",
+    "groupRespondRequests",
+    "setProfilePicture",
+    "removeProfilePicture",
+    "setAbout",
+    "fetchAbout",
+    "setPushName",
+    "businessProfile",
+    "blocklist",
+    "privacySettings",
+    "setPrivacy",
+    "lidForPhone",
+    "phoneForLid",
 ];
 
 struct Params<'a>(&'a Value);
 
 impl Params<'_> {
     fn missing(key: &str) -> Error {
-        Error::Other(format!("missing parameter \"{key}\""))
+        Error::InvalidArgument(format!("missing parameter \"{key}\""))
     }
 
     fn text(&self, key: &str) -> Result<String> {
@@ -95,7 +121,14 @@ impl Params<'_> {
 
     fn bytes(&self, key: &str) -> Result<Vec<u8>> {
         let raw = self.text(key)?;
-        STANDARD.decode(raw.trim()).map_err(|_| Error::Other(format!("parameter \"{key}\" must be base64")))
+        STANDARD.decode(raw.trim()).map_err(|_| Error::InvalidArgument(format!("parameter \"{key}\" must be base64")))
+    }
+
+    fn list(&self, key: &str) -> Result<Vec<String>> {
+        if self.0[key].is_null() {
+            return Ok(Vec::new());
+        }
+        self.texts(key)
     }
 
     fn parse<T: DeserializeOwned>(&self) -> Result<T> {
@@ -103,7 +136,8 @@ impl Params<'_> {
     }
 
     fn field<T: DeserializeOwned>(&self, key: &str) -> Result<T> {
-        serde_json::from_value(self.0[key].clone()).map_err(|err| Error::Other(format!("parameter \"{key}\": {err}")))
+        serde_json::from_value(self.0[key].clone())
+            .map_err(|err| Error::InvalidArgument(format!("parameter \"{key}\": {err}")))
     }
 }
 
@@ -151,7 +185,8 @@ impl Session {
             "sendText" => {
                 let (chat, text) = (p.text("chat")?, p.text("text")?);
                 let quoted = p.optional_text("quotedId");
-                done(self.send_text_choosing_preview(&chat, &text, quoted.as_deref(), &params["preview"]).await?)
+                let mentions = if params["mentions"].is_null() { Vec::new() } else { p.texts("mentions")? };
+                done(self.send_text_full(&chat, &text, quoted.as_deref(), &params["preview"], &mentions).await?)
             }
             "reply" => done(self.reply(&p.text("messageId")?, &p.text("text")?).await?),
             "react" => done(self.react(&p.text("messageId")?, &p.text("emoji")?).await?),
@@ -256,7 +291,51 @@ impl Session {
             "reachoutTimelock" => self.account("timelock", Vec::new()).await,
             "newChatMessageCap" => self.account("messageCap", Vec::new()).await,
             "disappearingModes" => self.account("disappearing", p.texts("jids")?).await,
-            other => Err(Error::Other(format!("unknown method \"{other}\""))),
+            "restart" => done(self.restart().await?),
+            "groupMetadata" => self.group_metadata(&p.text("chat")?).await,
+            "groupCreate" => self.group_create(&p.text("subject")?, &p.list("participants")?).await,
+            "groupParticipants" => {
+                let action = p.text("action")?;
+                self.group_participants(&p.text("chat")?, &p.texts("participants")?, &action).await
+            }
+            "groupSubject" => done(self.group_subject(&p.text("chat")?, &p.text("subject")?).await?),
+            "groupDescription" => {
+                let description = p.optional_text("description");
+                done(self.group_description(&p.text("chat")?, description.as_deref()).await?)
+            }
+            "groupSetting" => {
+                let setting = p.text("setting")?;
+                done(self.group_setting(&p.text("chat")?, &setting, &params["value"]).await?)
+            }
+            "groupPicture" => done(self.group_picture(&p.text("chat")?, p.bytes("data")?).await?),
+            "groupLeave" => done(self.group_leave(&p.text("chat")?).await?),
+            "groupInviteCode" => done(self.group_invite_code(&p.text("chat")?).await?),
+            "groupRevokeInvite" => done(self.group_revoke_invite(&p.text("chat")?).await?),
+            "groupJoin" => done(self.group_join(&p.text("invite")?).await?),
+            "groupInviteInfo" => self.group_invite_info(&p.text("invite")?).await,
+            "groupRequests" => self.group_requests(&p.text("chat")?).await,
+            "groupRespondRequests" => {
+                let approve = p.flag("approve", true);
+                self.group_respond_requests(&p.text("chat")?, &p.texts("participants")?, approve).await
+            }
+            "setProfilePicture" => {
+                let target = p.optional_text("target");
+                done(self.set_profile_picture(p.bytes("data")?, target.as_deref()).await?)
+            }
+            "removeProfilePicture" => {
+                let target = p.optional_text("target");
+                done(self.remove_profile_picture(target.as_deref()).await?)
+            }
+            "setAbout" => done(self.set_about(&p.text("text")?).await?),
+            "fetchAbout" => self.fetch_about(&p.texts("jids")?).await,
+            "setPushName" => done(self.set_push_name(&p.text("name")?).await?),
+            "businessProfile" => self.business_profile(&p.text("jid")?).await,
+            "blocklist" => self.blocklist().await,
+            "privacySettings" => self.privacy_settings().await,
+            "setPrivacy" => done(self.set_privacy(&p.text("setting")?, &p.text("value")?).await?),
+            "lidForPhone" => done(self.lid_for_phone(&p.text("phone")?).await?),
+            "phoneForLid" => done(self.phone_for_lid(&p.text("lid")?).await?),
+            other => Err(Error::InvalidArgument(format!("unknown method \"{other}\""))),
         }
     }
 }
@@ -266,7 +345,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn params_accept_strings_numbers_and_base64() {
+    fn params() {
         let value = json!({ "chat": 5215511111111u64, "data": "aG9sYQ==", "options": ["a", 2], "flag": true });
         let p = Params(&value);
         assert_eq!(p.text("chat").unwrap(), "5215511111111");

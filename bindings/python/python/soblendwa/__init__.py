@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import inspect
 import json
+import logging
+import re
 from collections import defaultdict
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Optional, Union
 
@@ -11,12 +15,77 @@ from ._native import import_baileys as _import_baileys
 Event = dict
 Handler = Callable[[Event], Union[Awaitable[None], None]]
 
-__all__ = ["SoblendWA", "NativeClient", "import_baileys", "credits", "__version__", "__author__"]
+__all__ = ["SoblendWA", "SoblendError", "NativeClient", "import_baileys", "credits", "__version__", "__author__"]
+
+_log = logging.getLogger("soblendwa")
+_CODED = re.compile(r"^\[([A-Z_]+)\] (.*)$", re.S)
+
+
+class SoblendError(RuntimeError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def _translate(error: BaseException) -> BaseException:
+    match = _CODED.match(str(error))
+    if not match:
+        return error
+    return SoblendError(match.group(1), match.group(2))
+
+
+async def _settle(awaitable: Awaitable) -> Any:
+    try:
+        return await awaitable
+    except RuntimeError as error:
+        raise _translate(error) from None
+
+
+class _Guarded:
+    def __init__(self, target: Any):
+        self._target = target
+
+    def __getattr__(self, name: str) -> Any:
+        value = getattr(self._target, name)
+        if not callable(value):
+            return value
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            try:
+                result = value(*args, **kwargs)
+            except RuntimeError as error:
+                raise _translate(error) from None
+            return _settle(result) if inspect.isawaitable(result) else result
+
+        return call
+
+
+def _encode(data: Union[bytes, bytearray, memoryview, str]) -> str:
+    if isinstance(data, str):
+        return data
+    return base64.b64encode(bytes(data)).decode("ascii")
+
+
+def _texts(values: Iterable[Any]) -> list:
+    flat = []
+    for value in values:
+        if isinstance(value, (list, tuple, set)):
+            flat.extend(str(item) for item in value)
+        elif value is not None:
+            flat.append(str(value))
+    return flat
+
+
+def _preview(preview: Union[bool, dict, None]) -> Any:
+    if not isinstance(preview, dict):
+        return preview
+    return {key: _encode(value) if key in ("thumbnail", "image") and value is not None else value for key, value in preview.items()}
 
 
 async def import_baileys(source: str, **target: Any) -> dict:
     target = target or {"type": "file", "path": "session"}
-    return json.loads(await _import_baileys(str(source), json.dumps(target)))
+    return json.loads(await _settle(_import_baileys(str(source), json.dumps(target))))
 
 
 def _camel(name: str) -> str:
@@ -45,13 +114,21 @@ def _id(message: Union[Event, str]) -> str:
 
 class SoblendWA:
     def __init__(self, native: NativeClient):
-        self.native = native
+        self.native = _Guarded(native)
         self._handlers: dict[str, list[Handler]] = defaultdict(list)
         self._tasks: set[asyncio.Task] = set()
 
     @classmethod
     async def create(cls, **options: Any) -> "SoblendWA":
-        return cls(await NativeClient.open(_options(options)))
+        return cls(await _settle(NativeClient.open(_options(options))))
+
+    async def call(self, method: str, **params: Any) -> Any:
+        return json.loads(await self.native.call(method, json.dumps(params)))
+
+    def _finished(self, task: asyncio.Task) -> None:
+        self._tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            _log.error("a SoblendWA handler failed", exc_info=task.exception())
 
     @property
     def me(self) -> Optional[str]:
@@ -74,23 +151,31 @@ class SoblendWA:
 
     async def events(self) -> AsyncIterator[Event]:
         while True:
-            raw = await self.native.next_event()
+            raw = await self.native.next_events(256)
             if raw is None:
                 return
-            yield json.loads(raw)
+            for event in json.loads(raw):
+                yield event
 
     async def run(self) -> None:
         await self.connect()
         async for event in self.events():
             for handler in (*self._handlers[event["type"]], *self._handlers["event"]):
-                outcome = handler(event)
+                try:
+                    outcome = handler(event)
+                except Exception:
+                    _log.exception("a SoblendWA handler failed")
+                    continue
                 if asyncio.iscoroutine(outcome):
                     task = asyncio.create_task(outcome)
                     self._tasks.add(task)
-                    task.add_done_callback(self._tasks.discard)
+                    task.add_done_callback(self._finished)
 
     async def disconnect(self) -> None:
         await self.native.disconnect()
+
+    async def restart(self) -> None:
+        await self.call("restart")
 
     async def logout(self) -> None:
         await self.native.logout()
@@ -116,11 +201,16 @@ class SoblendWA:
         text: str,
         quoted: Union[Event, str, None] = None,
         preview: Union[bool, dict, None] = None,
+        mentions: Optional[Iterable[Any]] = None,
     ) -> str:
-        quoted_id = _id(quoted) if quoted else None
-        if preview is None:
-            return await self.native.send_text(chat, text, quoted_id)
-        return await self.native.send_text_choosing_preview(chat, text, quoted_id, json.dumps(preview))
+        return await self.call(
+            "sendText",
+            chat=str(chat),
+            text=text,
+            quotedId=_id(quoted) if quoted else None,
+            preview=_preview(preview),
+            mentions=_texts(mentions) if mentions else None,
+        )
 
     async def send_proto(self, chat: str, proto: bytes) -> str:
         return await self.native.send_proto(chat, bytes(proto))
@@ -132,6 +222,8 @@ class SoblendWA:
         return await self.native.react(_id(message), emoji)
 
     async def send_media(self, chat: str, kind: str, data: bytes, quoted: Union[Event, str, None] = None, **options: Any) -> str:
+        if options.get("mentions"):
+            options["mentions"] = _texts(options["mentions"])
         if quoted:
             options["quoted_id"] = _id(quoted)
         return await self.native.send_media(chat, kind, bytes(data), _options(options))
@@ -281,3 +373,90 @@ class SoblendWA:
 
     async def unblock(self, jid: str) -> None:
         await self.native.block(jid, False)
+
+    async def group_metadata(self, chat: str) -> dict:
+        return await self.call("groupMetadata", chat=str(chat))
+
+    async def group_create(self, subject: str, participants: Iterable[Any] = ()) -> dict:
+        return await self.call("groupCreate", subject=subject, participants=_texts(participants))
+
+    async def group_participants(self, chat: str, participants: Iterable[Any], action: str) -> list:
+        return await self.call("groupParticipants", chat=str(chat), participants=_texts([participants]), action=action)
+
+    async def group_add(self, chat: str, participants: Any) -> list:
+        return await self.group_participants(chat, participants, "add")
+
+    async def group_kick(self, chat: str, participants: Any) -> list:
+        return await self.group_participants(chat, participants, "remove")
+
+    async def group_promote(self, chat: str, participants: Any) -> list:
+        return await self.group_participants(chat, participants, "promote")
+
+    async def group_demote(self, chat: str, participants: Any) -> list:
+        return await self.group_participants(chat, participants, "demote")
+
+    async def group_subject(self, chat: str, subject: str) -> None:
+        await self.call("groupSubject", chat=str(chat), subject=subject)
+
+    async def group_description(self, chat: str, description: Optional[str] = None) -> None:
+        await self.call("groupDescription", chat=str(chat), description=description)
+
+    async def group_setting(self, chat: str, setting: str, value: Any) -> None:
+        await self.call("groupSetting", chat=str(chat), setting=setting, value=value)
+
+    async def group_picture(self, chat: str, data: bytes) -> None:
+        await self.call("groupPicture", chat=str(chat), data=_encode(data))
+
+    async def group_leave(self, chat: str) -> None:
+        await self.call("groupLeave", chat=str(chat))
+
+    async def group_invite_code(self, chat: str) -> str:
+        return await self.call("groupInviteCode", chat=str(chat))
+
+    async def group_revoke_invite(self, chat: str) -> str:
+        return await self.call("groupRevokeInvite", chat=str(chat))
+
+    async def group_join(self, invite: str) -> str:
+        return await self.call("groupJoin", invite=str(invite))
+
+    async def group_invite_info(self, invite: str) -> dict:
+        return await self.call("groupInviteInfo", invite=str(invite))
+
+    async def group_requests(self, chat: str) -> list:
+        return await self.call("groupRequests", chat=str(chat))
+
+    async def group_respond_requests(self, chat: str, participants: Iterable[Any], approve: bool = True) -> list:
+        return await self.call("groupRespondRequests", chat=str(chat), participants=_texts([participants]), approve=approve)
+
+    async def set_profile_picture(self, data: bytes, target: Optional[str] = None) -> None:
+        await self.call("setProfilePicture", data=_encode(data), target=target)
+
+    async def remove_profile_picture(self, target: Optional[str] = None) -> None:
+        await self.call("removeProfilePicture", target=target)
+
+    async def set_about(self, text: str) -> None:
+        await self.call("setAbout", text=text)
+
+    async def fetch_about(self, *jids: Any) -> list:
+        return await self.call("fetchAbout", jids=_texts(jids))
+
+    async def set_push_name(self, name: str) -> None:
+        await self.call("setPushName", name=name)
+
+    async def business_profile(self, jid: str) -> Optional[dict]:
+        return await self.call("businessProfile", jid=str(jid))
+
+    async def blocklist(self) -> list:
+        return await self.call("blocklist")
+
+    async def privacy_settings(self) -> dict:
+        return await self.call("privacySettings")
+
+    async def set_privacy(self, setting: str, value: str) -> None:
+        await self.call("setPrivacy", setting=setting, value=value)
+
+    async def lid_for_phone(self, phone: Union[str, int]) -> Optional[str]:
+        return await self.call("lidForPhone", phone=str(phone))
+
+    async def phone_for_lid(self, lid: str) -> Optional[str]:
+        return await self.call("phoneForLid", lid=str(lid))

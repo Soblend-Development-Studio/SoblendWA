@@ -42,7 +42,7 @@ async fn http(address: SocketAddr, method: &str, path: &str, token: Option<&str>
 }
 
 #[tokio::test]
-async fn http_api_requires_the_token_and_dispatches_methods() {
+async fn http_api() {
     let (address, _stop) = start().await;
     let (status, info) = http(address, "GET", "/", None, None).await;
     assert_eq!(status, 200);
@@ -62,7 +62,8 @@ async fn http_api_requires_the_token_and_dispatches_methods() {
     assert!(reply["error"]["message"].as_str().unwrap().contains("not logged in"));
 
     let (status, reply) = http(address, "POST", "/api/bot1/nope", Some(TOKEN), None).await;
-    assert_eq!((status, reply["error"]["message"].as_str().unwrap()), (422, "unknown method \"nope\""));
+    assert_eq!((status, reply["error"]["code"].as_str().unwrap()), (422, "INVALID_ARGUMENT"));
+    assert!(reply["error"]["message"].as_str().unwrap().ends_with("unknown method \"nope\""));
     let (status, _) = http(address, "POST", "/api/mal%20nombre/status", Some(TOKEN), None).await;
     assert_eq!(status, 400);
 
@@ -84,7 +85,7 @@ where
 }
 
 #[tokio::test]
-async fn websocket_answers_calls_by_id() {
+async fn websocket_calls() {
     let (address, _stop) = start().await;
     let refused = tokio_tungstenite::connect_async(format!("ws://{address}/ws/bot2")).await;
     assert!(refused.is_err());
@@ -118,7 +119,7 @@ async fn websocket_answers_calls_by_id() {
 
 #[tokio::test]
 #[ignore = "connects to the real WhatsApp servers"]
-async fn live_qr_arrives_over_websocket() {
+async fn live_qr() {
     let (address, _stop) = start().await;
     let (socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws/live?token={TOKEN}")).await.unwrap();
     let (_sink, mut stream) = socket.split();

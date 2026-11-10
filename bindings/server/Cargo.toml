@@ -1,10 +1,10 @@
 [package]
 name = "soblendwa-server"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.89"
 authors = ["Soblend Development Studio"]
-description = "WebSocket and HTTP gateway that lets bots in any language drive SoblendWA. Crafted by Soblend Development Studio."
+description = "WebSocket and HTTP server to use SoblendWA from any language. By Soblend Development Studio."
 license = "MIT"
 publish = false
 
@@ -13,6 +13,7 @@ name = "soblendwa-server"
 path = "src/main.rs"
 
 [dependencies]
+mimalloc = { version = "0.1", default-features = false }
 axum = { version = "0.8", features = ["ws"] }
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

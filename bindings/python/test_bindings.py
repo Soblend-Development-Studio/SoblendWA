@@ -4,7 +4,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from soblendwa import SoblendWA, credits, import_baileys, __author__
+from soblendwa import SoblendError, SoblendWA, credits, import_baileys, __author__
 
 
 async def migration() -> None:
@@ -37,10 +37,18 @@ async def main() -> None:
     assert bot.elapsed("unknown") is None
     try:
         await bot.reply("unknown", "hola")
-    except RuntimeError as error:
-        assert "not among the recent messages" in str(error)
+    except SoblendError as error:
+        assert error.code == "MESSAGE_NOT_FOUND" and "not among the recent messages" in str(error)
     else:
         raise AssertionError("reply to an unknown message should fail")
+    try:
+        await bot.call("nope")
+    except SoblendError as error:
+        assert error.code == "INVALID_ARGUMENT"
+    else:
+        raise AssertionError("an unknown method should fail")
+    stats = await bot.call("stats")
+    assert stats["lost"] == 0 and stats["sendTimings"]["samples"] == 0
 
     started = time.perf_counter()
     await bot.connect()

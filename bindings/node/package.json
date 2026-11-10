@@ -1,7 +1,7 @@
 {
   "name": "soblendwa-node",
-  "version": "0.1.0",
-  "description": "SoblendWA for Node.js: the Rust WhatsApp Web multi-device engine by Soblend Development Studio.",
+  "version": "0.2.0",
+  "description": "WhatsApp Web multi-device for Node.js, running on the SoblendWA Rust engine. By Soblend Development Studio.",
   "author": "Soblend Development Studio",
   "license": "MIT",
   "homepage": "https://github.com/Soblend-Development-Studio/SoblendWA#readme",
@@ -17,6 +17,8 @@
     "index.js",
     "index.d.ts",
     "README.md",
+    "store-check.js",
+    "live-check.js",
     "soblendwa.win32-x64-msvc.node",
     "soblendwa.linux-x64-gnu.node",
     "soblendwa.linux-arm64-gnu.node",

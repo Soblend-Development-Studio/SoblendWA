@@ -215,20 +215,21 @@ impl Hub {
 }
 
 async fn pump(hub: Arc<Hub>, live: Arc<Live>) {
-    while let Some(event) = live.session.next_event().await {
-        match event["type"].as_str() {
-            Some("qr") => *live.qr.lock() = event["code"].as_str().map(str::to_owned),
-            Some("connected" | "pairSuccess" | "loggedOut") => *live.qr.lock() = None,
+    let session = serde_json::to_string(&live.name).unwrap_or_default();
+    while let Some(event) = live.session.next_event_text().await {
+        match event.kind {
+            "qr" => *live.qr.lock() = event.qr,
+            "connected" | "pairSuccess" | "loggedOut" => *live.qr.lock() = None,
             _ => {}
         }
-        let frame: Arc<str> = json!({ "session": live.name, "event": event }).to_string().into();
+        let frame: Arc<str> = format!("{{\"session\":{session},\"event\":{}}}", event.json).into();
         let _ = live.events.send(frame.clone());
         hub.deliver(frame);
     }
 }
 
-fn failure(status: StatusCode, message: impl Into<String>) -> Response {
-    (status, Json(json!({ "error": { "message": message.into() } }))).into_response()
+fn failure(status: StatusCode, code: &str, message: impl Into<String>) -> Response {
+    (status, Json(json!({ "error": { "message": message.into(), "code": code } }))).into_response()
 }
 
 async fn info(State(hub): State<Arc<Hub>>) -> Json<Value> {
@@ -247,7 +248,7 @@ async fn list_sessions(
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
     if !hub.authorized(&headers, &query) {
-        return failure(StatusCode::UNAUTHORIZED, "missing or wrong token");
+        return failure(StatusCode::UNAUTHORIZED, "UNAUTHORIZED", "missing or wrong token");
     }
     let sessions: Vec<Arc<Live>> = hub.sessions.lock().await.values().cloned().collect();
     Json(Value::Array(sessions.iter().map(|live| live.status()).collect())).into_response()
@@ -260,11 +261,11 @@ async fn status(
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
     if !hub.authorized(&headers, &query) {
-        return failure(StatusCode::UNAUTHORIZED, "missing or wrong token");
+        return failure(StatusCode::UNAUTHORIZED, "UNAUTHORIZED", "missing or wrong token");
     }
     match hub.open(&name).await {
         Ok(live) => Json(live.status()).into_response(),
-        Err(err) => failure(StatusCode::BAD_REQUEST, err),
+        Err(err) => failure(StatusCode::BAD_REQUEST, "INVALID_SESSION", err),
     }
 }
 
@@ -276,23 +277,29 @@ async fn rpc(
     body: Bytes,
 ) -> Response {
     if !hub.authorized(&headers, &query) {
-        return failure(StatusCode::UNAUTHORIZED, "missing or wrong token");
+        return failure(StatusCode::UNAUTHORIZED, "UNAUTHORIZED", "missing or wrong token");
     }
     let params: Value = if body.is_empty() {
         json!({})
     } else {
         match serde_json::from_slice(&body) {
             Ok(params) => params,
-            Err(err) => return failure(StatusCode::BAD_REQUEST, format!("body is not valid json: {err}")),
+            Err(err) => {
+                return failure(StatusCode::BAD_REQUEST, "INVALID_JSON", format!("body is not valid json: {err}"))
+            }
         }
     };
     let live = match hub.open(&name).await {
         Ok(live) => live,
-        Err(err) => return failure(StatusCode::BAD_REQUEST, err),
+        Err(err) => return failure(StatusCode::BAD_REQUEST, "INVALID_SESSION", err),
     };
     match live.session.call(&method, &params).await {
         Ok(result) => Json(json!({ "result": result })).into_response(),
-        Err(err) => failure(StatusCode::UNPROCESSABLE_ENTITY, err.to_string()),
+        Err(err) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": { "message": err.to_string(), "code": err.code(), "status": err.status() } })),
+        )
+            .into_response(),
     }
 }
 
@@ -304,12 +311,12 @@ async fn upgrade(
     socket: WebSocketUpgrade,
 ) -> Response {
     if !hub.authorized(&headers, &query) {
-        return failure(StatusCode::UNAUTHORIZED, "missing or wrong token");
+        return failure(StatusCode::UNAUTHORIZED, "UNAUTHORIZED", "missing or wrong token");
     }
     let name = name.map(|Path(name)| name).unwrap_or_else(|| "default".into());
     match hub.open(&name).await {
         Ok(live) => socket.on_upgrade(move |socket| client(live, socket)).into_response(),
-        Err(err) => failure(StatusCode::BAD_REQUEST, err),
+        Err(err) => failure(StatusCode::BAD_REQUEST, "INVALID_SESSION", err),
     }
 }
 
@@ -355,23 +362,26 @@ async fn client(live: Arc<Live>, socket: WebSocket) {
         let request: Value = match serde_json::from_str(&text) {
             Ok(request) => request,
             Err(err) => {
-                let reply = json!({ "id": null, "error": { "message": format!("invalid json: {err}") } });
+                let reply = json!({ "id": null, "error": { "message": format!("invalid json: {err}"), "code": "INVALID_JSON" } });
                 let _ = outgoing.send(reply.to_string());
                 continue;
             }
         };
+        let id = request["id"].clone();
+        let method = request["method"].as_str().unwrap_or_default().to_owned();
+        let params = match &request["params"] {
+            Value::Null => json!({}),
+            params => params.clone(),
+        };
+        let turn = live.session.turn(&method, &params);
         let live = live.clone();
         let outgoing = outgoing.clone();
         tokio::spawn(async move {
-            let id = request["id"].clone();
-            let method = request["method"].as_str().unwrap_or_default().to_owned();
-            let params = match &request["params"] {
-                Value::Null => json!({}),
-                params => params.clone(),
-            };
-            let reply = match live.session.call(&method, &params).await {
+            let reply = match soblendwa_bridge::in_turn(turn, live.session.call(&method, &params)).await {
                 Ok(result) => json!({ "id": id, "result": result }),
-                Err(err) => json!({ "id": id, "error": { "message": err.to_string() } }),
+                Err(err) => {
+                    json!({ "id": id, "error": { "message": err.to_string(), "code": err.code(), "status": err.status() } })
+                }
             };
             let _ = outgoing.send(reply.to_string());
         });

@@ -1,10 +1,10 @@
 [package]
 name = "soblendwa-python"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.89"
 authors = ["Soblend Development Studio"]
-description = "Python bindings for SoblendWA. Crafted by Soblend Development Studio."
+description = "Python bindings for SoblendWA."
 license = "MIT"
 publish = false
 
@@ -13,6 +13,7 @@ name = "_native"
 crate-type = ["cdylib"]
 
 [dependencies]
+mimalloc = { version = "0.1", default-features = false }
 pyo3 = { version = "0.30", features = ["abi3-py39", "experimental-async"] }
 serde_json = "1"
 soblendwa-bridge = { path = "../bridge" }

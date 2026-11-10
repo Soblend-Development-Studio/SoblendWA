@@ -1,13 +1,15 @@
 use std::borrow::Cow;
-use std::fmt::Display;
 use std::future::Future;
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use soblendwa_bridge::{self as bridge, Outcome, Session};
 
-fn fail(err: impl Display) -> PyErr {
-    PyRuntimeError::new_err(err.to_string())
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+fn fail(err: impl bridge::Describe) -> PyErr {
+    PyRuntimeError::new_err(err.describe())
 }
 
 async fn on<T, F, Fut>(session: &Session, work: F) -> PyResult<T>
@@ -17,6 +19,15 @@ where
     Fut: Future<Output = Outcome<T>> + Send + 'static,
 {
     bridge::run(work(session.clone())).await.map_err(fail)
+}
+
+async fn ordered<T, F, Fut>(session: &Session, turn: Option<bridge::Turn>, work: F) -> PyResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce(Session) -> Fut,
+    Fut: Future<Output = Outcome<T>> + Send + 'static,
+{
+    bridge::run(bridge::in_turn(turn, work(session.clone()))).await.map_err(fail)
 }
 
 #[pyclass(frozen, name = "NativeClient", module = "soblendwa._native")]
@@ -46,6 +57,18 @@ impl NativeClient {
 
     fn elapsed(&self, message_id: &str) -> Option<f64> {
         self.session.elapsed_ms(message_id)
+    }
+
+    #[pyo3(signature = (method, params = None))]
+    async fn call(&self, method: String, params: Option<String>) -> PyResult<String> {
+        let params: serde_json::Value = match params {
+            Some(raw) => serde_json::from_str(&raw).map_err(fail)?,
+            None => serde_json::Value::Null,
+        };
+        ordered(&self.session, self.session.turn(&method, &params), |s| async move {
+            s.call(&method, &params).await.map(|v| v.to_string())
+        })
+        .await
     }
 
     fn stats(&self) -> String {
@@ -80,6 +103,10 @@ impl NativeClient {
         on(&self.session, |s| async move { Ok(s.next_event().await.map(|event| event.to_string())) }).await
     }
 
+    async fn next_events(&self, max: usize) -> PyResult<Option<String>> {
+        on(&self.session, |s| async move { Ok(s.next_events_json(max).await) }).await
+    }
+
     async fn ping(&self) -> PyResult<f64> {
         on(&self.session, |s| async move { s.ping().await }).await
     }
@@ -90,7 +117,10 @@ impl NativeClient {
 
     #[pyo3(signature = (chat, text, quoted_id = None))]
     async fn send_text(&self, chat: String, text: String, quoted_id: Option<String>) -> PyResult<String> {
-        on(&self.session, |s| async move { s.send_text(&chat, &text, quoted_id.as_deref()).await }).await
+        ordered(&self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.send_text(&chat, &text, quoted_id.as_deref()).await
+        })
+        .await
     }
 
     async fn send_text_choosing_preview(
@@ -112,21 +142,35 @@ impl NativeClient {
     }
 
     async fn send_proto(&self, chat: String, proto: Vec<u8>) -> PyResult<String> {
-        on(&self.session, |s| async move { s.send_proto(&chat, &proto).await }).await
+        ordered(
+            &self.session,
+            Some(self.session.turn_for_chat(&chat)),
+            |s| async move { s.send_proto(&chat, &proto).await },
+        )
+        .await
     }
 
     async fn reply(&self, message_id: String, text: String) -> PyResult<String> {
-        on(&self.session, |s| async move { s.reply(&message_id, &text).await }).await
+        ordered(&self.session, self.session.turn_for_message(&message_id), |s| async move {
+            s.reply(&message_id, &text).await
+        })
+        .await
     }
 
     async fn react(&self, message_id: String, emoji: String) -> PyResult<String> {
-        on(&self.session, |s| async move { s.react(&message_id, &emoji).await }).await
+        ordered(&self.session, self.session.turn_for_message(&message_id), |s| async move {
+            s.react(&message_id, &emoji).await
+        })
+        .await
     }
 
     #[pyo3(signature = (chat, kind, data, options = None))]
     async fn send_media(&self, chat: String, kind: String, data: Vec<u8>, options: Option<String>) -> PyResult<String> {
         let input = bridge::parse_media(options.as_deref()).map_err(fail)?;
-        on(&self.session, |s| async move { s.send_media(&chat, &kind, data, input).await }).await
+        ordered(&self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.send_media(&chat, &kind, data, input).await
+        })
+        .await
     }
 
     #[pyo3(signature = (chat, kind, path, options = None))]
@@ -138,7 +182,10 @@ impl NativeClient {
         options: Option<String>,
     ) -> PyResult<String> {
         let input = bridge::parse_media(options.as_deref()).map_err(fail)?;
-        on(&self.session, |s| async move { s.send_media_file(&chat, &kind, &path, input).await }).await
+        ordered(&self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.send_media_file(&chat, &kind, &path, input).await
+        })
+        .await
     }
 
     async fn download_to_file(&self, message_id: String, path: String) -> PyResult<u64> {
@@ -147,7 +194,10 @@ impl NativeClient {
 
     async fn send_interactive(&self, chat: String, spec: String) -> PyResult<String> {
         let spec: bridge::InteractiveSpec = serde_json::from_str(&spec).map_err(fail)?;
-        on(&self.session, |s| async move { s.send_interactive(&chat, spec).await }).await
+        ordered(&self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.send_interactive(&chat, spec).await
+        })
+        .await
     }
 
     #[pyo3(signature = (chat, text, buttons, footer = None))]
@@ -158,7 +208,10 @@ impl NativeClient {
         buttons: Vec<(String, String)>,
         footer: Option<String>,
     ) -> PyResult<String> {
-        on(&self.session, |s| async move { s.send_buttons(&chat, &text, footer.as_deref(), buttons).await }).await
+        ordered(&self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.send_buttons(&chat, &text, footer.as_deref(), buttons).await
+        })
+        .await
     }
 
     #[pyo3(signature = (chat, title, text, button_text, sections, footer = None))]
@@ -172,7 +225,7 @@ impl NativeClient {
         footer: Option<String>,
     ) -> PyResult<String> {
         let sections: Vec<bridge::SectionSpec> = serde_json::from_str(&sections).map_err(fail)?;
-        on(&self.session, |s| async move {
+        ordered(&self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
             s.send_list(&chat, &title, &text, &button_text, footer.as_deref(), sections).await
         })
         .await
@@ -198,16 +251,25 @@ impl NativeClient {
     }
 
     async fn send_contacts(&self, chat: String, cards: Vec<(String, String)>) -> PyResult<String> {
-        on(&self.session, |s| async move { s.send_contacts(&chat, cards).await }).await
+        ordered(&self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.send_contacts(&chat, cards).await
+        })
+        .await
     }
 
     async fn send_mention_all(&self, chat: String, text: String) -> PyResult<String> {
-        on(&self.session, |s| async move { s.send_mention_all(&chat, &text).await }).await
+        ordered(&self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.send_mention_all(&chat, &text).await
+        })
+        .await
     }
 
     #[pyo3(signature = (to, group, caption = None))]
     async fn send_group_invite(&self, to: String, group: String, caption: Option<String>) -> PyResult<String> {
-        on(&self.session, |s| async move { s.send_group_invite(&to, &group, caption.as_deref()).await }).await
+        ordered(&self.session, Some(self.session.turn_for_chat(&to)), |s| async move {
+            s.send_group_invite(&to, &group, caption.as_deref()).await
+        })
+        .await
     }
 
     async fn set_member_label(&self, group: String, label: String) -> PyResult<String> {
@@ -247,19 +309,31 @@ impl NativeClient {
 
     #[pyo3(signature = (chat, name, options, selectable = 1))]
     async fn send_poll(&self, chat: String, name: String, options: Vec<String>, selectable: u32) -> PyResult<String> {
-        on(&self.session, |s| async move { s.send_poll(&chat, &name, options, selectable).await }).await
+        ordered(&self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.send_poll(&chat, &name, options, selectable).await
+        })
+        .await
     }
 
     async fn vote_poll(&self, chat: String, poll_id: String, options: Vec<String>) -> PyResult<String> {
-        on(&self.session, |s| async move { s.vote_poll(&chat, &poll_id, options).await }).await
+        ordered(&self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.vote_poll(&chat, &poll_id, options).await
+        })
+        .await
     }
 
     async fn edit(&self, chat: String, message_id: String, text: String) -> PyResult<String> {
-        on(&self.session, |s| async move { s.edit(&chat, &message_id, &text).await }).await
+        ordered(&self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.edit(&chat, &message_id, &text).await
+        })
+        .await
     }
 
     async fn revoke(&self, chat: String, message_id: String) -> PyResult<String> {
-        on(&self.session, |s| async move { s.revoke(&chat, &message_id).await }).await
+        ordered(&self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.revoke(&chat, &message_id).await
+        })
+        .await
     }
 
     async fn chat_presence(&self, chat: String, state: String) -> PyResult<()> {

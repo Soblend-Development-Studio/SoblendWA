@@ -1,15 +1,18 @@
-use std::fmt::Display;
 use std::future::Future;
+use std::sync::Arc;
 
-use napi::bindgen_prelude::{Buffer, Promise};
+use napi::bindgen_prelude::{Buffer, Promise, PromiseRaw, ToNapiValue};
 use napi::threadsafe_function::ThreadsafeFunction;
-use napi::{Error, Result, Status};
+use napi::{Env, Error, Result, Status};
 use napi_derive::napi;
 use serde_json::Value;
 use soblendwa_bridge::{self as bridge, Session};
 
-fn fail(err: impl Display) -> Error {
-    Error::from_reason(err.to_string())
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+fn fail(err: impl bridge::Describe) -> Error {
+    Error::from_reason(err.describe())
 }
 
 async fn on<T, F, Fut>(session: &Session, work: F) -> Result<T>
@@ -19,6 +22,21 @@ where
     Fut: Future<Output = soblendwa_bridge::Outcome<T>> + Send + 'static,
 {
     bridge::run(work(session.clone())).await.map_err(fail)
+}
+
+fn ordered<'env, T, F, Fut>(
+    env: &'env Env,
+    session: &Session,
+    turn: Option<bridge::Turn>,
+    work: F,
+) -> Result<PromiseRaw<'env, T>>
+where
+    T: Send + ToNapiValue + 'static,
+    F: FnOnce(Session) -> Fut,
+    Fut: Future<Output = soblendwa_bridge::Outcome<T>> + Send + 'static,
+{
+    let work = work(session.clone());
+    env.spawn_future(async move { bridge::run(bridge::in_turn(turn, work)).await.map_err(fail) })
 }
 
 #[napi]
@@ -72,6 +90,24 @@ impl bridge::StoreHandler for JsStore {
     }
 }
 
+#[napi]
+pub async fn import_zapo(source: Value, target: Option<Value>, check: Option<bool>) -> Result<Value> {
+    let source: bridge::ZapoSource = serde_json::from_value(source).map_err(fail)?;
+    let target: Option<bridge::StoreOptions> = match target {
+        Some(Value::Null) | None => None,
+        Some(value) => Some(serde_json::from_value(value).map_err(fail)?),
+    };
+    let check = check.unwrap_or(false);
+    bridge::run(async move { bridge::import_zapo(source, target, check).await }).await.map_err(fail)
+}
+
+#[napi]
+pub async fn rollback_zapo(source: Value, target: Value) -> Result<Value> {
+    let source: bridge::StoreOptions = serde_json::from_value(source).map_err(fail)?;
+    let target: bridge::ZapoSource = serde_json::from_value(target).map_err(fail)?;
+    bridge::run(async move { bridge::rollback_zapo(source, target).await }).await.map_err(fail)
+}
+
 #[napi(js_name = "NativeClient")]
 pub struct NativeClient {
     session: Session,
@@ -101,8 +137,24 @@ impl NativeClient {
     }
 
     #[napi]
+    pub fn call<'env>(&self, env: &'env Env, method: String, params: Option<Value>) -> Result<PromiseRaw<'env, Value>> {
+        let params = params.unwrap_or(Value::Null);
+        ordered(
+            env,
+            &self.session,
+            self.session.turn(&method, &params),
+            |s| async move { s.call(&method, &params).await },
+        )
+    }
+
+    #[napi]
     pub fn stats(&self) -> Value {
         self.session.client().stats().to_json()
+    }
+
+    #[napi]
+    pub fn stats_json(&self) -> String {
+        self.session.client().stats().to_json().to_string()
     }
 
     #[napi]
@@ -165,6 +217,11 @@ impl NativeClient {
     }
 
     #[napi]
+    pub async fn next_events(&self, max: u32) -> Result<Option<String>> {
+        on(&self.session, |s| async move { Ok(s.next_events_json(max as usize).await) }).await
+    }
+
+    #[napi]
     pub async fn ping(&self) -> Result<f64> {
         on(&self.session, |s| async move { s.ping().await }).await
     }
@@ -175,48 +232,81 @@ impl NativeClient {
     }
 
     #[napi]
-    pub async fn send_text(&self, chat: String, text: String, quoted_id: Option<String>) -> Result<String> {
-        on(&self.session, |s| async move { s.send_text(&chat, &text, quoted_id.as_deref()).await }).await
+    pub fn send_text<'env>(
+        &self,
+        env: &'env Env,
+        chat: String,
+        text: String,
+        quoted_id: Option<String>,
+    ) -> Result<PromiseRaw<'env, String>> {
+        ordered(env, &self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.send_text(&chat, &text, quoted_id.as_deref()).await
+        })
     }
 
     #[napi]
-    pub async fn send_text_with_preview(&self, chat: String, text: String) -> Result<String> {
-        on(&self.session, |s| async move { s.send_text_with_preview(&chat, &text).await }).await
+    pub fn send_text_with_preview<'env>(
+        &self,
+        env: &'env Env,
+        chat: String,
+        text: String,
+    ) -> Result<PromiseRaw<'env, String>> {
+        ordered(env, &self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.send_text_with_preview(&chat, &text).await
+        })
     }
 
     #[napi]
-    pub async fn send_proto(&self, chat: String, proto: Buffer) -> Result<String> {
+    pub fn send_proto<'env>(&self, env: &'env Env, chat: String, proto: Buffer) -> Result<PromiseRaw<'env, String>> {
         let proto = proto.to_vec();
-        on(&self.session, |s| async move { s.send_proto(&chat, &proto).await }).await
+        ordered(env, &self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.send_proto(&chat, &proto).await
+        })
     }
 
     #[napi]
-    pub async fn reply(&self, message_id: String, text: String) -> Result<String> {
-        on(&self.session, |s| async move { s.reply(&message_id, &text).await }).await
+    pub fn reply<'env>(&self, env: &'env Env, message_id: String, text: String) -> Result<PromiseRaw<'env, String>> {
+        ordered(env, &self.session, self.session.turn_for_message(&message_id), |s| async move {
+            s.reply(&message_id, &text).await
+        })
     }
 
     #[napi]
-    pub async fn react(&self, message_id: String, emoji: String) -> Result<String> {
-        on(&self.session, |s| async move { s.react(&message_id, &emoji).await }).await
+    pub fn react<'env>(&self, env: &'env Env, message_id: String, emoji: String) -> Result<PromiseRaw<'env, String>> {
+        ordered(env, &self.session, self.session.turn_for_message(&message_id), |s| async move {
+            s.react(&message_id, &emoji).await
+        })
     }
 
     #[napi]
-    pub async fn send_media(&self, chat: String, kind: String, data: Buffer, options: Option<Value>) -> Result<String> {
+    pub fn send_media<'env>(
+        &self,
+        env: &'env Env,
+        chat: String,
+        kind: String,
+        data: Buffer,
+        options: Option<Value>,
+    ) -> Result<PromiseRaw<'env, String>> {
         let data = data.to_vec();
         let input: bridge::MediaInput = parse(options)?;
-        on(&self.session, |s| async move { s.send_media(&chat, &kind, data, input).await }).await
+        ordered(env, &self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.send_media(&chat, &kind, data, input).await
+        })
     }
 
     #[napi]
-    pub async fn send_media_file(
+    pub fn send_media_file<'env>(
         &self,
+        env: &'env Env,
         chat: String,
         kind: String,
         path: String,
         options: Option<Value>,
-    ) -> Result<String> {
+    ) -> Result<PromiseRaw<'env, String>> {
         let input: bridge::MediaInput = parse(options)?;
-        on(&self.session, |s| async move { s.send_media_file(&chat, &kind, &path, input).await }).await
+        ordered(env, &self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.send_media_file(&chat, &kind, &path, input).await
+        })
     }
 
     #[napi]
@@ -225,39 +315,50 @@ impl NativeClient {
     }
 
     #[napi]
-    pub async fn send_interactive(&self, chat: String, spec: Value) -> Result<String> {
+    pub fn send_interactive<'env>(
+        &self,
+        env: &'env Env,
+        chat: String,
+        spec: Value,
+    ) -> Result<PromiseRaw<'env, String>> {
         let spec: bridge::InteractiveSpec = serde_json::from_value(spec).map_err(fail)?;
-        on(&self.session, |s| async move { s.send_interactive(&chat, spec).await }).await
+        ordered(env, &self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.send_interactive(&chat, spec).await
+        })
     }
 
     #[napi]
-    pub async fn send_buttons(
+    pub fn send_buttons<'env>(
         &self,
+        env: &'env Env,
         chat: String,
         text: String,
         buttons: Value,
         footer: Option<String>,
-    ) -> Result<String> {
+    ) -> Result<PromiseRaw<'env, String>> {
         let buttons: Vec<QuickButton> = serde_json::from_value(buttons).map_err(fail)?;
         let pairs = buttons.into_iter().map(|b| (b.id, b.text)).collect();
-        on(&self.session, |s| async move { s.send_buttons(&chat, &text, footer.as_deref(), pairs).await }).await
+        ordered(env, &self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.send_buttons(&chat, &text, footer.as_deref(), pairs).await
+        })
     }
 
     #[napi]
-    pub async fn send_list(
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_list<'env>(
         &self,
+        env: &'env Env,
         chat: String,
         title: String,
         text: String,
         button_text: String,
         sections: Value,
         footer: Option<String>,
-    ) -> Result<String> {
+    ) -> Result<PromiseRaw<'env, String>> {
         let sections: Vec<bridge::SectionSpec> = serde_json::from_value(sections).map_err(fail)?;
-        on(&self.session, |s| async move {
+        ordered(env, &self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
             s.send_list(&chat, &title, &text, &button_text, footer.as_deref(), sections).await
         })
-        .await
     }
 
     #[napi]
@@ -281,20 +382,37 @@ impl NativeClient {
     }
 
     #[napi]
-    pub async fn send_contacts(&self, chat: String, cards: Value) -> Result<String> {
+    pub fn send_contacts<'env>(&self, env: &'env Env, chat: String, cards: Value) -> Result<PromiseRaw<'env, String>> {
         let cards: Vec<ContactCard> = serde_json::from_value(cards).map_err(fail)?;
         let pairs = cards.into_iter().map(|c| (c.name, c.phone)).collect();
-        on(&self.session, |s| async move { s.send_contacts(&chat, pairs).await }).await
+        ordered(env, &self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.send_contacts(&chat, pairs).await
+        })
     }
 
     #[napi]
-    pub async fn send_mention_all(&self, chat: String, text: String) -> Result<String> {
-        on(&self.session, |s| async move { s.send_mention_all(&chat, &text).await }).await
+    pub fn send_mention_all<'env>(
+        &self,
+        env: &'env Env,
+        chat: String,
+        text: String,
+    ) -> Result<PromiseRaw<'env, String>> {
+        ordered(env, &self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.send_mention_all(&chat, &text).await
+        })
     }
 
     #[napi]
-    pub async fn send_group_invite(&self, to: String, group: String, caption: Option<String>) -> Result<String> {
-        on(&self.session, |s| async move { s.send_group_invite(&to, &group, caption.as_deref()).await }).await
+    pub fn send_group_invite<'env>(
+        &self,
+        env: &'env Env,
+        to: String,
+        group: String,
+        caption: Option<String>,
+    ) -> Result<PromiseRaw<'env, String>> {
+        ordered(env, &self.session, Some(self.session.turn_for_chat(&to)), |s| async move {
+            s.send_group_invite(&to, &group, caption.as_deref()).await
+        })
     }
 
     #[napi]
@@ -338,29 +456,50 @@ impl NativeClient {
     }
 
     #[napi]
-    pub async fn send_poll(
+    pub fn send_poll<'env>(
         &self,
+        env: &'env Env,
         chat: String,
         name: String,
         options: Vec<String>,
         selectable: Option<u32>,
-    ) -> Result<String> {
-        on(&self.session, |s| async move { s.send_poll(&chat, &name, options, selectable.unwrap_or(1)).await }).await
+    ) -> Result<PromiseRaw<'env, String>> {
+        ordered(env, &self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.send_poll(&chat, &name, options, selectable.unwrap_or(1)).await
+        })
     }
 
     #[napi]
-    pub async fn vote_poll(&self, chat: String, poll_id: String, options: Vec<String>) -> Result<String> {
-        on(&self.session, |s| async move { s.vote_poll(&chat, &poll_id, options).await }).await
+    pub fn vote_poll<'env>(
+        &self,
+        env: &'env Env,
+        chat: String,
+        poll_id: String,
+        options: Vec<String>,
+    ) -> Result<PromiseRaw<'env, String>> {
+        ordered(env, &self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.vote_poll(&chat, &poll_id, options).await
+        })
     }
 
     #[napi]
-    pub async fn edit(&self, chat: String, message_id: String, text: String) -> Result<String> {
-        on(&self.session, |s| async move { s.edit(&chat, &message_id, &text).await }).await
+    pub fn edit<'env>(
+        &self,
+        env: &'env Env,
+        chat: String,
+        message_id: String,
+        text: String,
+    ) -> Result<PromiseRaw<'env, String>> {
+        ordered(env, &self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.edit(&chat, &message_id, &text).await
+        })
     }
 
     #[napi]
-    pub async fn revoke(&self, chat: String, message_id: String) -> Result<String> {
-        on(&self.session, |s| async move { s.revoke(&chat, &message_id).await }).await
+    pub fn revoke<'env>(&self, env: &'env Env, chat: String, message_id: String) -> Result<PromiseRaw<'env, String>> {
+        ordered(env, &self.session, Some(self.session.turn_for_chat(&chat)), |s| async move {
+            s.revoke(&chat, &message_id).await
+        })
     }
 
     #[napi]
@@ -396,5 +535,119 @@ impl NativeClient {
     #[napi]
     pub async fn block(&self, jid: String, blocked: bool) -> Result<()> {
         on(&self.session, |s| async move { s.block(&jid, blocked).await }).await
+    }
+}
+
+#[napi(js_name = "FakeServer")]
+pub struct FakeServer {
+    fake: Arc<bridge::FakeWhatsApp>,
+}
+
+#[napi]
+pub async fn start_fake_server() -> Result<FakeServer> {
+    let fake = bridge::run(async { bridge::FakeWhatsApp::start().await }).await.map_err(fail)?;
+    Ok(FakeServer { fake: Arc::new(fake) })
+}
+
+#[napi]
+impl FakeServer {
+    #[napi(getter)]
+    pub fn url(&self) -> String {
+        self.fake.url()
+    }
+
+    #[napi]
+    pub async fn open(&self, phone: String, options: Option<Value>) -> Result<NativeClient> {
+        let mut options = options.unwrap_or_else(|| Value::Object(Default::default()));
+        if let Value::Object(fields) = &mut options {
+            fields.entry("store").or_insert_with(|| serde_json::json!({ "type": "memory" }));
+        }
+        let mut options: bridge::Options = serde_json::from_value(options).map_err(fail)?;
+        options.fake = Some(bridge::fake_link(&self.fake, &phone));
+        let session = bridge::run(Session::open(options)).await.map_err(fail)?;
+        Ok(NativeClient { session })
+    }
+
+    #[napi]
+    pub fn create_group(&self, subject: String, creator: String, members: Vec<String>) -> String {
+        let members: Vec<&str> = members.iter().map(String::as_str).collect();
+        self.fake.create_group(&subject, &creator, &members).to_string()
+    }
+
+    #[napi]
+    pub fn add_to_group(&self, group: String, by: String, phones: Vec<String>) -> Result<()> {
+        let group = bridge::jid(&group).map_err(fail)?;
+        let phones: Vec<&str> = phones.iter().map(String::as_str).collect();
+        self.fake.add_to_group(&group, &by, &phones);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn remove_from_group(&self, group: String, by: String, phones: Vec<String>) -> Result<()> {
+        let group = bridge::jid(&group).map_err(fail)?;
+        let phones: Vec<&str> = phones.iter().map(String::as_str).collect();
+        self.fake.remove_from_group(&group, &by, &phones);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn invite_code(&self, group: String) -> Result<Option<String>> {
+        Ok(self.fake.invite_code(&bridge::jid(&group).map_err(fail)?))
+    }
+
+    #[napi]
+    pub fn set_join_approval(&self, group: String, enabled: bool) -> Result<()> {
+        self.fake.set_join_approval(&bridge::jid(&group).map_err(fail)?, enabled);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn drop_connections(&self, phone: String) {
+        self.fake.drop_connections(&phone);
+    }
+
+    #[napi]
+    pub fn refuse_connections(&self, phone: String, refuse: bool) {
+        self.fake.refuse_connections(&phone, refuse);
+    }
+
+    #[napi]
+    pub fn block(&self, phone: String, code: u32) {
+        self.fake.block(&phone, code as u16);
+    }
+
+    #[napi]
+    pub fn unblock(&self, phone: String) {
+        self.fake.unblock(&phone);
+    }
+
+    #[napi]
+    pub fn hold_acks(&self, phone: String, hold: bool) {
+        self.fake.hold_acks(&phone, hold);
+    }
+
+    #[napi]
+    pub fn corrupt_next(&self, phone: String, messages: u32) {
+        self.fake.corrupt_next(&phone, messages);
+    }
+
+    #[napi]
+    pub fn expire_media(&self) {
+        self.fake.expire_media();
+    }
+
+    #[napi]
+    pub fn media_uploads(&self) -> f64 {
+        self.fake.media_uploads() as f64
+    }
+
+    #[napi]
+    pub fn routed(&self) -> f64 {
+        self.fake.routed() as f64
+    }
+
+    #[napi]
+    pub fn is_online(&self, phone: String) -> bool {
+        self.fake.is_online(&phone)
     }
 }

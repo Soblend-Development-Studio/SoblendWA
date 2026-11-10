@@ -1,10 +1,10 @@
 [package]
 name = "soblendwa-node"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.89"
 authors = ["Soblend Development Studio"]
-description = "Node.js bindings for SoblendWA. Crafted by Soblend Development Studio."
+description = "Node.js bindings for SoblendWA."
 license = "MIT"
 publish = false
 
@@ -12,6 +12,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+mimalloc = { version = "0.1", default-features = false }
 napi = { version = "3", default-features = false, features = ["napi6", "async", "serde-json"] }
 napi-derive = "3"
 serde = { version = "1", features = ["derive"] }

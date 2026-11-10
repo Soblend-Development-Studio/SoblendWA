@@ -1,32 +1,20 @@
-# SoblendWA para Python
+<img src="https://raw.githubusercontent.com/Soblend-Development-Studio/SoblendWA/main/assets/icon.svg" width="64" alt="" align="right">
 
-Cliente de WhatsApp Web multi-dispositivo con el motor de
-[SoblendWA](https://github.com/Soblend-Development-Studio/SoblendWA) en Rust, como módulo nativo para `asyncio`. Hecho
-por **Soblend Development Studio**.
+# soblendwa para Python
 
-Todo el trabajo pesado (cifrado Signal, socket, códec binario, almacenamiento) corre en Rust, fuera del GIL. Los
-métodos son corrutinas normales de Python: se usan con `await`, sin hilos ni callbacks.
+WhatsApp Web multi-dispositivo para `asyncio`, con el motor de
+[SoblendWA](https://github.com/Soblend-Development-Studio/SoblendWA) en Rust. De Soblend Development Studio.
 
-## Instalar
+Signal, el socket y el almacenamiento corren en Rust y fuera del GIL. Desde Python todo son corrutinas normales: `await`
+y listo, sin hilos ni callbacks raros.
 
 ```bash
 pip install soblendwa
 ```
 
-Funciona con Python 3.9 o más reciente (ABI estable) en Windows x64, macOS (Intel y ARM) y Linux x64 o ARM64. No hace falta
-tener Rust.
+Python 3.9 o más nuevo, en Windows x64, macOS (Intel y ARM) y Linux x64/ARM64. No necesitas Rust.
 
-### Compilar desde el repositorio
-
-```text
-pip install maturin
-maturin develop --release
-python test_bindings.py
-```
-
-Para generar una rueda instalable: `maturin build --release`.
-
-## Uso
+## Ejemplo
 
 ```python
 import asyncio
@@ -42,13 +30,17 @@ async def main():
 
     @bot.on("message")
     async def answer(message):
-        if message["info"]["fromMe"]:
+        if message["info"]["fromMe"] or message["info"]["offline"]:
             return
         if message["text"] == "!ping":
-            await bot.reply(message, f"Pong\n{bot.elapsed(message):.2f} ms")
+            await bot.reply(message, f"Pong {bot.elapsed(message):.2f} ms")
         if message["text"] == "!foto":
             with open("foto.jpg", "rb") as photo:
                 await bot.send_image(message["info"]["chat"], photo.read(), caption="Hola", quoted=message)
+
+    @bot.on("joinedGroup")
+    async def greet(event):
+        await bot.send_text(event["group"], "Hola a todos")
 
     await bot.run()
 
@@ -56,25 +48,22 @@ async def main():
 asyncio.run(main())
 ```
 
-Si prefieres manejar el bucle tú mismo: `await bot.connect()` y luego `async for event in bot.events(): ...`.
+Si una función tuya lanza una excepción, se registra con `logging` y el bot sigue. Si prefieres llevar el bucle tú:
+`await bot.connect()` y después `async for event in bot.events(): ...`.
 
-Opciones extra de `SoblendWA.create`: `proxy="socks5://usuario:clave@host:1080"`,
-`chat_store={"path": "session/chats.json"}` y `link_previews={"enabled": False}`.
+Para vincular con número: `await bot.request_pair_code("5215512345678")` después del primer `qr`.
 
-Los enlaces de un texto llevan vista previa sola. Para quitarla o escribirla a mano:
-`await bot.send_text(chat, texto, preview=False)` o `preview={"title": "Mi título"}`.
+## Opciones
 
-Para migrar un bot de Baileys sin volver a escanear el QR:
+Además de `store` y `push_name`: `proxy="socks5://usuario:clave@host:1080"`, `chat_store={"path": "session/chats.json"}`,
+`link_previews={"enabled": False}`, `media_store={"type": "sqlite", "path": "media.db"}` para compartir multimedia
+subida entre cuentas, y `retry_deadline_secs=600`, que es cuánto se espera un mensaje que no se pudo descifrar antes
+de darlo por perdido. `send_limit=False` apaga el límite de envíos, o pásale un dict con `perMinute`, `burst`,
+`perChatPerMinute` y `perChatBurst`.
 
-```python
-from soblendwa import import_baileys
+Si mandas varios mensajes al mismo chat con `asyncio.gather`, salen en el orden en que creaste las corrutinas.
 
-report = await import_baileys("./auth_info", type="sqlite", path="session/auth.db")
-```
-
-Para vincular con código en lugar de QR: `await bot.request_pair_code("5215512345678")` después del primer evento `qr`.
-
-## Almacenamiento
+Stores disponibles:
 
 ```python
 store={"type": "file", "path": "session"}
@@ -85,23 +74,76 @@ store={"type": "mongo", "url": "mongodb://localhost:27017", "database": "wa", "a
 store={"type": "memory"}
 ```
 
-MongoDB es experimental: falta probarlo contra un servidor real.
-
 ## Métodos
 
-`send_text`, `reply`, `react`, `send_image`, `send_video`, `send_audio`, `send_document`, `send_sticker`, `send_file`,
-`download`, `download_to_file`, `send_interactive`, `send_buttons`, `send_list`, `chats`, `contacts`, `messages`, `search`,
-`send_poll`, `vote_poll`, `edit`, `revoke`, `typing`, `set_online`, `group_info`, `joined_groups`, `on_whatsapp`,
-`profile_picture`, `block`, `unblock`, `send_proto`, `request_pair_code`, `stats`, `pending_sends`, `ping`, `elapsed`,
-`disconnect` y `logout`.
+Mensajes: `send_text(chat, text, quoted=, preview=, mentions=)`, `reply`, `react`, `edit`, `revoke`, `send_image`,
+`send_video`, `send_audio`, `send_document`, `send_sticker`, `send_file`, `download`, `download_to_file`, `send_poll`,
+`vote_poll`, `send_contacts`, `send_mention_all`, `send_group_invite`, `send_interactive`, `send_buttons`, `send_list`,
+`send_proto`, `typing`, `set_online`, `mark_played`.
 
-Los eventos son diccionarios con una clave `type` (`qr`, `connected`, `message`, `pollVote`, `chatUpdate`, …), con
-los mismos campos que en el binding de Node.js.
+Con `preview=False` se quita la vista previa de un enlace y con `preview={"title": "…", "thumbnail": bytes}` la pones
+tú.
 
-## Aviso
+Grupos: `group_info`, `group_metadata`, `joined_groups`, `group_create`, `group_add`, `group_kick`, `group_promote`,
+`group_demote`, `group_subject`, `group_description`, `group_setting`, `group_picture`, `group_leave`,
+`group_invite_code`, `group_revoke_invite`, `group_invite_info`, `group_join`, `group_requests`,
+`group_respond_requests`.
 
-SoblendWA es independiente y no está afiliado a WhatsApp ni a Meta. Automatizar una cuenta puede ir contra sus Términos
-de Servicio y provocar un bloqueo. Lee
-[qué está probado](https://github.com/Soblend-Development-Studio/SoblendWA#estado).
+Perfil y contactos: `profile_picture`, `set_profile_picture`, `remove_profile_picture`, `set_about`, `fetch_about`,
+`set_push_name`, `business_profile`, `block`, `unblock`, `blocklist`, `privacy_settings`, `set_privacy`,
+`on_whatsapp`, `lid_for_phone`, `phone_for_lid`.
+
+Chats: `chats`, `contacts`, `messages`, `search`, `modify_chat`, `label_chat`, `label_message`, `edit_label`,
+`delete_label`, `save_quick_reply`.
+
+Sesión: `connect`, `run`, `restart`, `disconnect`, `logout`, `ping`, `stats`, `pending_sends`, `elapsed`,
+`request_pair_code`. Y `call("metodo", **params)` para cualquier método del despachador por nombre.
+
+Los eventos son diccionarios con `type` y los mismos campos que en Node: `message`, `loggedOut` (con `cause`),
+`joinedGroup`, `leftGroup`, `messageRecovered`, `messageLost`, `lidMapping`, `chatUpdate`, etc.
+
+## Errores
+
+Lo que falla lanza `SoblendError`, con `code`:
+
+```python
+from soblendwa import SoblendError
+
+try:
+    url = await bot.profile_picture(jid)
+except SoblendError as error:
+    if error.code == "PRIVATE_PHOTO":
+        url = None
+    else:
+        raise
+```
+
+Códigos que vas a ver seguido: `APPROVAL_REQUIRED`, `PRIVATE_PHOTO`, `MESSAGE_NOT_FOUND`, `NO_DEVICES`, `INVALID_ARGUMENT`,
+`NOT_AUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `RATE_LIMITED`, `NOT_CONNECTED`, `TIMEOUT`.
+
+## Migrar desde Baileys
+
+```python
+from soblendwa import import_baileys
+
+report = await import_baileys("./auth_info", type="sqlite", path="session/auth.db")
+```
+
+No hay que volver a escanear. Para zapo usa el ejemplo de Rust o el módulo de Node, que tienen `importZapo`.
+
+## Compilar desde el repo
+
+```bash
+pip install maturin
+maturin develop --release
+python test_bindings.py
+```
+
+`maturin build --release` genera la rueda.
+
+---
+
+No estamos afiliados a WhatsApp ni a Meta, y automatizar una cuenta puede acabar en bloqueo. Lo que está probado y lo
+que no: [README principal](https://github.com/Soblend-Development-Studio/SoblendWA#estado).
 
 MIT © 2026 Soblend Development Studio

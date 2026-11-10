@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "soblendwa"
-version = "0.1.0"
-description = "SoblendWA for Python: the Rust WhatsApp Web multi-device engine by Soblend Development Studio."
+version = "0.2.0"
+description = "WhatsApp Web multi-device for Python asyncio, running on the SoblendWA Rust engine. By Soblend Development Studio."
 readme = "README.md"
 authors = [{ name = "Soblend Development Studio" }]
 license = { text = "MIT" }
