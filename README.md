@@ -304,8 +304,8 @@ await rollbackZapo({ type: 'sqlite', path: 'session/auth.db' }, zapo)
 
 Con `check: true` lee todo y cuenta lo que pasaría sin escribir nada. Se niega a importar sobre un store que ya tiene una
 cuenta vinculada, y `rollbackZapo` escribe el estado de vuelta en la base de zapo con los ratchets al día. Con SQLite se
-probó contra zapo-js 1.11 real en los dos sentidos; desde `@zapo-js/store-mongo` todavía no contra un MongoDB real, así
-que hazlo primero sobre una copia de tu base, como explica
+probó contra zapo-js 1.11 real en los dos sentidos. Desde `@zapo-js/store-mongo` pasa contra un MongoDB real en el CI,
+pero con documentos de prueba y no con una base que haya escrito zapo, así que hazlo primero sobre una copia, como explica
 [la guía](https://soblend-development-studio.github.io/SoblendWA/#migrar-copia).
 
 Desde Rust, sin Node:
@@ -328,11 +328,13 @@ y todo lo demás contra nuestro WhatsApp falso, que habla el protocolo real.
 
 Falta probar en real: comunidades y canales propios, catálogo, re-subida de multimedia caducada, etiquetas, el bloqueo
 con WhatsApp de verdad, qué tanto se recuperan los mensajes con MAC mala, y `joinedGroup`, la causa de `loggedOut` y
-`messageLost` con un número de verdad. MongoDB, PostgreSQL y Redis tienen pruebas contra servidores reales en el CI,
-pero todavía no con datos de producción. La corrida de semanas ya está en marcha y falta que termine.
+`messageLost` con un número de verdad. MongoDB, PostgreSQL y Redis ya pasan contra servidores reales en el CI
+(MongoDB 7, PostgreSQL 16 y Redis 7), pero falta usarlos con datos de producción. La corrida de semanas ya está en
+marcha y falta que termine.
 
 Si algo falla con tu cuenta, abre un [issue](https://github.com/Soblend-Development-Studio/SoblendWA/issues) con el
-error.
+error. Si es una falla de seguridad, mejor en privado como dice
+[SECURITY.md](https://github.com/Soblend-Development-Studio/SoblendWA/blob/main/SECURITY.md).
 
 <details>
 <summary>Qué se probó y contra qué, con detalle</summary>
