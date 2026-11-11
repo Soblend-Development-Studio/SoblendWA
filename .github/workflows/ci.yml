@@ -73,6 +73,22 @@ jobs:
         env:
           PYTHONPATH: bindings/python/python
 
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python site/build.py --check
+      - run: python site/check_snippets.py
+      - run: node site/browser_test.cjs "$(command -v google-chrome)" docs/index.html "$RUNNER_TEMP/shots"
+
   real-databases:
     runs-on: ubuntu-latest
     services:
@@ -106,3 +122,6 @@ jobs:
           node bindings/node/store-check.js "{\"type\":\"postgres\",\"url\":\"$SOBLEND_POSTGRES_URL\"}"
           node bindings/node/store-check.js "{\"type\":\"redis\",\"url\":\"$SOBLEND_REDIS_URL\"}"
           node bindings/node/store-check.js "{\"type\":\"sqlite\",\"path\":\"ci-store.db\"}"
+      - run: npm ci --prefix tests/zapo --no-audit --no-fund
+      - run: node tests/zapo/round-trip.cjs mongo "$SOBLEND_MONGO_URL"
+      - run: node tests/zapo/round-trip.cjs sqlite

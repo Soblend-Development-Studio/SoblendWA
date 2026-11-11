@@ -13,6 +13,12 @@ arregla. Para no llevarte sorpresas fija la versión exacta: `"soblendwa-node": 
 - `join_group` falla con `APPROVAL_REQUIRED` cuando el grupo pide aprobación (la solicitud igual se manda).
 - Node, Python y servidor: parámetros malos → `INVALID_ARGUMENT`, mensaje inexistente → `MESSAGE_NOT_FOUND` (antes
   ambos `OTHER`).
+- Un envío que pasa el límite ya no falla en el acto: espera en la fila de su chat hasta 30 s (`max_wait`) y solo
+  entonces da `RATE_LIMITED`. `max_wait: 0` / `maxWaitSecs: 0` deja el comportamiento de antes.
+- `SendLimit` tiene campos nuevos (`per_group_per_minute`, `per_group_burst`, `max_wait`); si lo armas a mano, termina
+  con `..Default::default()`.
+- Node, Python y servidor: una opción desconocida da `INVALID_ARGUMENT` con la más parecida (`did you mean
+  "sendLimit"?`) en lugar de ignorarse.
 
 ### Nuevo
 
@@ -29,7 +35,22 @@ arregla. Para no llevarte sorpresas fija la versión exacta: `"soblendwa-node": 
 - Python: `FakeWhatsApp` y `wait_for()`, igual que en Node. `test_fake.py` corre en el CI junto con `test-fake.js`.
 - Servidor: `GET /metrics` en formato Prometheus, con la misma clave que lo demás.
 - `FakeWhatsApp::slow_uploads` / `slowUploads(ms)` para simular un CDN lento.
-- Rust: `send_prepared(chat, future)` es público.
+- Rust: `send_prepared(chat, future)` es público, y `connect_timeout` / `keepalive` en el builder.
+- Todas las opciones de Rust en Node, Python y el servidor: `outbox`, `mediaCache`, `workers`, `queryTimeoutSecs`,
+  `connectTimeoutSecs`, `keepaliveSecs` y `version`. El servidor las recibe en `--options` (JSON o `@archivo.json`).
+  Una prueba compara `Config` con lo que aceptan los bindings.
+- Límite propio para grupos (`per_group_per_minute`, `per_group_burst`) y `stats().rate_delayed` /
+  `soblendwa_rate_delayed_total` para los envíos que esperaron su turno.
+- `tests/zapo/round-trip.cjs`: zapo-js 1.11 escribe una sesión con su propio `@zapo-js/store-mongo` (o `store-sqlite`),
+  SoblendWA la importa, sigue las mismas conversaciones sin sesiones nuevas y la devuelve a zapo, que continúa. Corre en
+  el CI contra MongoDB 7.
+- `tests/zapo/versus.cjs`: la comparación con zapo con SQLite en los dos, una red con latencia y jitter de por medio,
+  documentos subidos en cada pedido, un grupo y el arranque desde la base.
+- `bindings/node/soak.js`: la prueba larga desde Node.js, con la misma carpeta y el mismo reporte que `examples/soak.rs`.
+- Un `stream:error` trae en el motivo de la desconexión el nodo completo y, si quedó algo sin confirmar, cuál era.
+- La fuente de la documentación vive en `site/`: la versión sale de `Cargo.toml`, el historial de este archivo, y el
+  CI falla si `docs/index.html` quedó viejo, si hay un enlace roto, si una página menciona una versión que no es la
+  actual o si un ejemplo de Rust no compila.
 - `store-check.js` y `live-check.js` para probar tu base y un número de prueba;
   [guía](https://soblend-development-studio.github.io/SoblendWA/#probar-en-real).
 - `examples/soak.rs`: deja tu número conectado semanas y te contesta solo a ti con `!yowner`.
@@ -68,6 +89,9 @@ Medido en la misma máquina antes y después (`pipeline` y `throughput` en las p
 - Un mensaje que esperaba su reintento se olvidaba al reiniciar: no llegaba ni `messageLost` ni `messageRecovered`, y
   `stats().lost` se quedaba corto. Ahora la espera se guarda en el store (`awaiting-retry`).
 - Python: si salías de `events()` a la mitad de un lote, el resto del lote se perdía.
+- Las reacciones a tus estados llegan como `<status type="reaction">` y no se confirmaban: WhatsApp cortaba la conexión
+  50 minutos después y la volvía a mandar en cada reconexión, para siempre. Lo encontró la prueba larga con un número
+  real (17 reconexiones forzadas en 19 horas) una vez que el motivo de la desconexión empezó a traer el nodo completo.
 - Dos hilos podían guardar la misma sesión Signal en orden invertido y dejar un ratchet viejo en el store. La ventana
   era de nanosegundos y nunca se vio, pero ahora cada sesión se guarda antes de soltar su lock.
 - Node: un listener que tiraba excepción cortaba los eventos, y una promesa rechazada podía tumbar el proceso.

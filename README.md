@@ -136,21 +136,28 @@ número le escribes `!ayuda`.
 
 ## Rendimiento
 
-Un bot de eco contra el mismo `@zapo-js/fake-server`, cada uno en su proceso y con almacenamiento en memoria, zapo
-usando su acelerador nativo. Es la mediana de 3 corridas alternadas, 500 idas y vueltas más 500 en ráfaga:
+El mismo bot escrito con cada librería, los dos guardando en SQLite, contra el mismo `@zapo-js/fake-server` con un proxy
+que mete 60 ms de ida y vuelta ± 10 ms de jitter, y con `!archivo` subiendo un documento de 64 KB nuevo en cada pedido.
+Mediana de 3 corridas alternadas, con `tests/zapo/versus.cjs`:
 
 | | SoblendWA | zapo-js 1.11 |
 |---|---|---|
-| Ida y vuelta p50 / p95 / p99 | **4,2** / 10,1 / 16,3 ms | 10,5 / 18,4 / 23,3 ms |
-| Mensajes por segundo en ráfaga | **474** | 228 |
-| CPU del bot por mensaje | **0,7 ms** | 4,5 ms |
-| Memoria al terminar (pico) | **12 MB** (24 MB) | 130 MB (131 MB) |
-| Conectar y vincular | **100 ms** | 1.565 ms |
+| Privado, ida y vuelta p50 / p95 | **92 / 121 ms** | 186 / 228 ms |
+| Grupo, ida y vuelta p50 | **94 ms** | 110 ms |
+| Documento de 64 KB, p50 / p95 | **106** / 422 ms | 204 / **285** ms |
+| Ráfaga de 300, respuestas por segundo | **314** | 90 |
+| CPU del bot por mensaje | **1,6 ms** | 13,1 ms |
+| Memoria al terminar | **63 MB** | 125 MB |
+| Arrancar desde la base | **0,7 s** | 2,9 s |
 
-Ojo con estos números: es una sola máquina Windows con otras cosas abiertas (la ráfaga nuestra varió entre 394 y 786
-msg/s), el servidor falso corre en Node y pone un piso para los dos, y no hay red real. En producción casi todo el
-tiempo se va en la red hasta WhatsApp, y eso no lo arregla ninguna librería. Para ver cuánto se va en cada fase con tu
-red, usa `stats().sendTimings`.
+Ojo con estos números: es una sola máquina Windows, el servidor falso y sus contactos corren en Node en la misma
+máquina, y la memoria incluye a Node en los dos. El p95 de documentos es peor en SoblendWA, que llega al servidor de
+multimedia falso por un puente HTTP local porque solo confía en certificados reales. Lo de verdad con WhatsApp está en la
+[prueba en producción](https://soblend-development-studio.github.io/SoblendWA/#estado-produccion), y para ver cuánto se va
+en cada fase con tu red usa `stats().sendTimings`.
+
+Con un bot de eco mínimo, en memoria y sin red, la diferencia es la misma: 4,2 contra 10,5 ms de ida y vuelta, 0,7 contra
+4,5 ms de CPU por mensaje y 12 contra 130 MB.
 
 <details>
 <summary>Más números: pieza por pieza, desde Node y con muchas cuentas</summary>
@@ -234,7 +241,8 @@ Esta parte es la que más nos importaba. Cosas que pasan solas:
   en paralelo, y los archivos suben a la vez aunque vayan al mismo chat: solo la entrega espera turno.
 - Si el bot se reinicia mientras espera el reintento de un mensaje que no pudo descifrar, la espera sigue donde estaba
   (se guarda en el store) y `messageLost` / `messageRecovered` llegan igual.
-- Hay un límite de envíos por defecto (240 por minuto, 40 por chat) para que un bucle no termine en spam; se ajusta
+- Hay un límite de envíos por defecto (240 por minuto, 40 por chat y 40 por grupo) para que un bucle no termine en
+  spam. Lo que se pasa espera en la fila de su chat, en orden, hasta 30 s, y solo entonces da `RATE_LIMITED`; se ajusta
   o se apaga con `sendLimit`. La reconexión espera cada vez más, con algo de azar para que cien sesiones no reconecten
   en el mismo milisegundo.
 - Un handler que truena (pánico en Rust, excepción o promesa rechazada en Node, excepción en Python) se reporta y la
@@ -253,7 +261,9 @@ tar -xzf soblendwa.tar.gz && ./soblendwa-server --token "una-clave-larga" --sess
 ```
 
 El de Linux es estático, así que corre en cualquier VPS. Con dos cuentas anduvo en unos 14 MB. Para compilarlo tú:
-`cargo install --git https://github.com/Soblend-Development-Studio/SoblendWA soblendwa-server`.
+`cargo install --git https://github.com/Soblend-Development-Studio/SoblendWA soblendwa-server`. Las mismas opciones del
+cliente que en Node o Python van en `--options '{"sendLimit": {"perGroupPerMinute": 90}, "workers": 8}'` o en un
+archivo con `--options @opciones.json`.
 
 Por WebSocket te conectas a `ws://host:8787/ws/<cuenta>?token=…`, llegan los eventos como
 `{"session":"ventas","event":{"type":"message",…}}` y llamas métodos con
@@ -306,9 +316,12 @@ await rollbackZapo({ type: 'sqlite', path: 'session/auth.db' }, zapo)
 ```
 
 Con `check: true` lee todo y cuenta lo que pasaría sin escribir nada. Se niega a importar sobre un store que ya tiene una
-cuenta vinculada, y `rollbackZapo` escribe el estado de vuelta en la base de zapo con los ratchets al día. Con SQLite se
-probó contra zapo-js 1.11 real en los dos sentidos. Desde `@zapo-js/store-mongo` pasa contra un MongoDB real en el CI,
-pero con documentos de prueba y no con una base que haya escrito zapo, así que hazlo primero sobre una copia, como explica
+cuenta vinculada, y `rollbackZapo` escribe el estado de vuelta en la base de zapo con los ratchets al día.
+
+`tests/zapo/round-trip.cjs` lo prueba de punta a punta con zapo-js 1.11 de verdad: zapo vincula y conversa guardando con
+su propio `@zapo-js/store-mongo` (o `store-sqlite`), SoblendWA importa y sigue las mismas conversaciones sin sesiones
+nuevas, y al devolverlo zapo continúa donde quedó. El CI lo corre en cada push contra MongoDB 7. Aun así, con tu bot de
+producción haz primero el simulacro y una copia, como explica
 [la guía](https://soblend-development-studio.github.io/SoblendWA/#migrar-copia).
 
 Desde Rust, sin Node:
@@ -331,9 +344,15 @@ y todo lo demás contra nuestro WhatsApp falso, que habla el protocolo real.
 
 Falta probar en real: comunidades y canales propios, catálogo, re-subida de multimedia caducada, etiquetas, el bloqueo
 con WhatsApp de verdad, qué tanto se recuperan los mensajes con MAC mala, y `joinedGroup`, la causa de `loggedOut` y
-`messageLost` con un número de verdad. MongoDB, PostgreSQL y Redis ya pasan contra servidores reales en el CI
-(MongoDB 7, PostgreSQL 16 y Redis 7), pero falta usarlos con datos de producción. La corrida de semanas ya está en
-marcha y falta que termine.
+`messageLost` con un número de verdad. PostgreSQL y Redis ya pasan contra servidores reales en el CI, pero falta usarlos
+con datos de producción; MongoDB además recibe en el CI una sesión escrita por zapo y la sigue usando.
+
+Una cuenta personal real corre la prueba larga desde el 9 de noviembre de 2026 en un VPS Linux: en las primeras 19,5
+horas recibió 27.963 mensajes, 79 llegaron sin descifrar (0,28 %), 66 se recuperaron con el reintento y 10 se perdieron,
+sin pánicos y con 27 MB de memoria. Esa corrida encontró un bug real: las reacciones a los estados de la cuenta no se
+confirmaban y WhatsApp cortaba la conexión cada 50 minutos; ya está arreglado. Desde el 10 de noviembre sigue con la
+misma sesión desde el módulo de Node.js. Los detalles están en
+[Estado](https://soblend-development-studio.github.io/SoblendWA/#estado-produccion).
 
 Si algo falla con tu cuenta, abre un [issue](https://github.com/Soblend-Development-Studio/SoblendWA/issues) con el
 error. Si es una falla de seguridad, mejor en privado como dice
@@ -375,6 +394,7 @@ cargo test --workspace
 cargo test --features "sqlite mongo testing" --lib
 node bindings/node/test-fake.js
 python bindings/python/test_fake.py
+npm ci --prefix tests/zapo && node tests/zapo/round-trip.cjs sqlite
 ```
 
 `test-fake.js` y `test_fake.py` levantan el WhatsApp falso desde Node y Python y prueban citas, menciones, miniaturas
@@ -396,8 +416,8 @@ El decodificador binario se prueba con cientos de miles de entradas aleatorias y
 pánico. El CI corre formato, clippy y todo lo anterior en Linux, Windows y macOS, y también contra MongoDB, PostgreSQL
 y Redis de verdad.
 
-Para corridas largas está `examples/soak.rs`: se queda conectado semanas con tu número, no responde a nadie y solo te
-contesta a ti cuando escribes `!yowner` en un chat privado. `clients/js/soak.mjs` hace algo parecido entre dos cuentas,
+Para corridas largas está `examples/soak.rs` (o `bindings/node/soak.js`, igual pero desde Node): se queda conectado
+semanas con tu número, no responde a nadie y solo te contesta a ti cuando escribes `!yowner` en un chat privado. `clients/js/soak.mjs` hace algo parecido entre dos cuentas,
 y `examples/canary.rs` conviene correrlo una vez al día para enterarse rápido si WhatsApp cambió algo.
 
 ---
