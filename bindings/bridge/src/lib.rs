@@ -117,12 +117,13 @@ impl Default for StoreOptions {
 }
 
 #[derive(Deserialize, Debug, Clone, Default)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct Options {
     pub store: StoreOptions,
     pub push_name: Option<String>,
     pub device_name: Option<String>,
     pub platform: Option<String>,
+    pub version: Option<VersionOption>,
     pub country_code: Option<String>,
     pub online_on_connect: Option<bool>,
     pub auto_reconnect: Option<bool>,
@@ -131,12 +132,124 @@ pub struct Options {
     pub link_previews: Option<LinkPreviewOptions>,
     pub server: Option<ServerOverride>,
     pub media_store: Option<StoreOptions>,
+    pub media_cache: Option<MediaCacheOptions>,
     pub retry_deadline_secs: Option<u64>,
     pub send_limit: Option<SendLimitOptions>,
+    pub outbox: Option<bool>,
+    pub workers: Option<usize>,
+    pub query_timeout_secs: Option<f64>,
+    pub connect_timeout_secs: Option<f64>,
+    pub keepalive_secs: Option<f64>,
     #[serde(skip)]
     pub fake: Option<FakeLink>,
     #[serde(skip)]
     pub custom_store: Option<CustomStore>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(untagged)]
+pub enum VersionOption {
+    Text(String),
+    Parts([u32; 3]),
+}
+
+impl VersionOption {
+    fn parts(&self) -> Result<[u32; 3]> {
+        match self {
+            VersionOption::Parts(parts) => Ok(*parts),
+            VersionOption::Text(text) => {
+                let parts: Vec<u32> =
+                    text.split('.').map(str::parse).collect::<std::result::Result<_, _>>().map_err(|_| {
+                        Error::InvalidArgument(format!("version must look like \"2.3000.1052682108\", got \"{text}\""))
+                    })?;
+                parts.try_into().map_err(|_| {
+                    Error::InvalidArgument(format!(
+                        "version needs three numbers, like \"2.3000.1052682108\", got \"{text}\""
+                    ))
+                })
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum MediaCacheOptions {
+    Enabled(bool),
+    Ttl(Duration),
+}
+
+impl<'de> Deserialize<'de> for MediaCacheOptions {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Values {
+            ttl_secs: u64,
+        }
+        match Value::deserialize(deserializer)? {
+            Value::Bool(enabled) => Ok(MediaCacheOptions::Enabled(enabled)),
+            object @ Value::Object(_) => serde_json::from_value::<Values>(object)
+                .map(|values| MediaCacheOptions::Ttl(Duration::from_secs(values.ttl_secs)))
+                .map_err(|err| serde::de::Error::custom(format!("in mediaCache: {err}"))),
+            _ => Err(serde::de::Error::custom("mediaCache must be true, false or { ttlSecs }")),
+        }
+    }
+}
+
+impl MediaCacheOptions {
+    fn ttl(&self) -> Option<Duration> {
+        match self {
+            MediaCacheOptions::Enabled(true) => soblendwa::Config::default().media_cache_ttl,
+            MediaCacheOptions::Enabled(false) => None,
+            MediaCacheOptions::Ttl(ttl) => Some(*ttl),
+        }
+    }
+}
+
+fn seconds(name: &str, value: f64) -> Result<Duration> {
+    Duration::try_from_secs_f64(value)
+        .ok()
+        .filter(|d| !d.is_zero())
+        .ok_or_else(|| Error::InvalidArgument(format!("{name} must be a positive number of seconds, got {value}")))
+}
+
+// serde's message already lists every valid option; this adds the closest one so a typo is obvious.
+fn explain_option_error(err: serde_json::Error) -> Error {
+    let message = err.to_string();
+    let Some((unknown, expected)) = message
+        .strip_prefix("unknown field `")
+        .and_then(|rest| rest.split_once('`'))
+        .and_then(|(unknown, rest)| Some((unknown, rest.split_once("expected ")?.1)))
+    else {
+        return Error::InvalidArgument(format!("bad option: {message}"));
+    };
+    let candidates: Vec<&str> = expected.split('`').skip(1).step_by(2).collect();
+    let closest = candidates.iter().min_by_key(|candidate| distance(unknown, candidate)).copied();
+    match closest.filter(|candidate| distance(unknown, candidate) <= unknown.len().max(3) / 3 + 1) {
+        Some(candidate) => {
+            Error::InvalidArgument(format!("unknown option \"{unknown}\", did you mean \"{candidate}\"?"))
+        }
+        None => Error::InvalidArgument(format!("unknown option \"{unknown}\"; valid ones: {}", candidates.join(", "))),
+    }
+}
+
+fn distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.to_lowercase().chars().collect(), b.to_lowercase().chars().collect());
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut current = vec![i + 1; b.len() + 1];
+        for (j, cb) in b.iter().enumerate() {
+            current[j + 1] = (previous[j] + usize::from(ca != cb)).min(previous[j + 1] + 1).min(current[j] + 1);
+        }
+        previous = current;
+    }
+    previous[b.len()]
+}
+
+pub fn options_from_value(value: Value) -> Result<Options> {
+    if value.is_null() {
+        return Ok(Options::default());
+    }
+    serde_json::from_value(value).map_err(explain_option_error)
 }
 
 pub struct EventText {
@@ -145,20 +258,34 @@ pub struct EventText {
     pub json: String,
 }
 
-#[derive(Deserialize, Debug, Clone)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 pub enum SendLimitOptions {
     Enabled(bool),
     Custom(SendLimitValues),
 }
 
+impl<'de> Deserialize<'de> for SendLimitOptions {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        match Value::deserialize(deserializer)? {
+            Value::Bool(enabled) => Ok(SendLimitOptions::Enabled(enabled)),
+            object @ Value::Object(_) => serde_json::from_value(object)
+                .map(SendLimitOptions::Custom)
+                .map_err(|err| serde::de::Error::custom(format!("in sendLimit: {err}"))),
+            _ => Err(serde::de::Error::custom("sendLimit must be true, false or an object")),
+        }
+    }
+}
+
 #[derive(Deserialize, Debug, Clone, Default)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct SendLimitValues {
     pub per_minute: Option<u32>,
     pub burst: Option<u32>,
     pub per_chat_per_minute: Option<u32>,
     pub per_chat_burst: Option<u32>,
+    pub per_group_per_minute: Option<u32>,
+    pub per_group_burst: Option<u32>,
+    pub max_wait_secs: Option<f64>,
 }
 
 impl SendLimitOptions {
@@ -172,13 +299,18 @@ impl SendLimitOptions {
                 burst: values.burst.unwrap_or(base.burst),
                 per_chat_per_minute: values.per_chat_per_minute.unwrap_or(base.per_chat_per_minute),
                 per_chat_burst: values.per_chat_burst.unwrap_or(base.per_chat_burst),
+                per_group_per_minute: values.per_group_per_minute.unwrap_or(base.per_group_per_minute),
+                per_group_burst: values.per_group_burst.unwrap_or(base.per_group_burst),
+                max_wait: values
+                    .max_wait_secs
+                    .map_or(base.max_wait, |secs| Duration::try_from_secs_f64(secs).unwrap_or_default()),
             }),
         }
     }
 }
 
 #[derive(Deserialize, Debug, Clone, Default)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct LinkPreviewOptions {
     pub enabled: Option<bool>,
     pub timeout_ms: Option<u64>,
@@ -222,7 +354,7 @@ impl LinkPreviewOptions {
 }
 
 #[derive(Deserialize, Debug, Clone, Default)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct ServerOverride {
     pub ws_url: Option<String>,
     pub noise_root_hex: Option<String>,
@@ -339,7 +471,7 @@ pub struct FakeLink {
 }
 
 #[derive(Deserialize, Debug, Clone, Default)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct ChatStoreOptions {
     pub path: Option<String>,
     pub limit: Option<usize>,
@@ -449,7 +581,7 @@ impl MediaInput {
 
 pub fn parse_options(raw: Option<&str>) -> Result<Options> {
     match raw.map(str::trim).filter(|r| !r.is_empty()) {
-        Some(raw) => serde_json::from_str(raw).map_err(Error::from),
+        Some(raw) => options_from_value(serde_json::from_str(raw)?),
         None => Ok(Options::default()),
     }
 }
@@ -597,6 +729,27 @@ impl Session {
         }
         if let Some(enabled) = options.auto_reconnect {
             builder = builder.auto_reconnect(enabled);
+        }
+        if let Some(version) = &options.version {
+            builder = builder.version(version.parts()?);
+        }
+        if let Some(cache) = &options.media_cache {
+            builder = builder.media_cache(cache.ttl());
+        }
+        if let Some(enabled) = options.outbox {
+            builder = builder.outbox(enabled);
+        }
+        if let Some(workers) = options.workers {
+            builder = builder.workers(workers);
+        }
+        if let Some(secs) = options.query_timeout_secs {
+            builder = builder.query_timeout(seconds("queryTimeoutSecs", secs)?);
+        }
+        if let Some(secs) = options.connect_timeout_secs {
+            builder = builder.connect_timeout(seconds("connectTimeoutSecs", secs)?);
+        }
+        if let Some(secs) = options.keepalive_secs {
+            builder = builder.keepalive(seconds("keepaliveSecs", secs)?);
         }
         let (client, events) = builder.build().await?;
         Ok(Session {
@@ -1124,6 +1277,88 @@ pub fn version() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fields_of(source: &str, item: &str) -> Vec<String> {
+        let start = source.find(item).unwrap_or_else(|| panic!("{item} not found"));
+        let body = &source[start..];
+        let body = &body[body.find('{').unwrap() + 1..body.find("\n}").unwrap()];
+        body.lines().filter_map(|line| line.trim().strip_prefix("pub ")?.split(':').next().map(str::to_owned)).collect()
+    }
+
+    fn camel(name: &str) -> String {
+        let mut out = String::new();
+        let mut upper = false;
+        for c in name.chars() {
+            if c == '_' {
+                upper = true;
+            } else if upper {
+                out.extend(c.to_uppercase());
+                upper = false;
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    // A setting added to the Rust Config has to reach Node, Python and the server too, or be listed here
+    // with the reason it can't.
+    #[test]
+    fn every_setting_reaches_the_bindings() {
+        let options: &[(&str, Value)] = &[
+            ("device_name", json!({ "deviceName": "Bot" })),
+            ("platform", json!({ "platform": "desktop" })),
+            ("version", json!({ "version": "2.3000.1052682108" })),
+            ("push_name", json!({ "pushName": "Bot" })),
+            ("country_code", json!({ "countryCode": "MX" })),
+            ("online_on_connect", json!({ "onlineOnConnect": false })),
+            ("auto_reconnect", json!({ "autoReconnect": false })),
+            ("connect_timeout", json!({ "connectTimeoutSecs": 10 })),
+            ("query_timeout", json!({ "queryTimeoutSecs": 30 })),
+            ("keepalive_interval", json!({ "keepaliveSecs": 20 })),
+            ("workers", json!({ "workers": 8 })),
+            ("ws_url", json!({ "server": { "wsUrl": "ws://127.0.0.1:1" } })),
+            ("proxy", json!({ "proxy": "socks5://127.0.0.1:1080" })),
+            ("media_cache_ttl", json!({ "mediaCache": { "ttlSecs": 3600 } })),
+            ("send_limit", json!({ "sendLimit": false })),
+            ("outbox", json!({ "outbox": false })),
+            ("trust_root", json!({ "server": { "noiseRootHex": "00" } })),
+            ("media_endpoint", json!({ "server": { "mediaEndpoint": "http://127.0.0.1:1" } })),
+            ("link_previews", json!({ "linkPreviews": { "enabled": false } })),
+            ("retry_deadline", json!({ "retryDeadlineSecs": 60 })),
+        ];
+        let config = fields_of(include_str!("../../../src/client/mod.rs"), "pub struct Config {");
+        for field in &config {
+            let (_, sample) = options
+                .iter()
+                .find(|(name, _)| name == field)
+                .unwrap_or_else(|| panic!("Config::{field} has no option in Node/Python/server"));
+            options_from_value(sample.clone()).unwrap_or_else(|err| panic!("{field}: {sample} was refused: {err}"));
+        }
+        assert_eq!(config.len(), options.len(), "an option here is no longer in Config");
+
+        for field in fields_of(include_str!("../../../src/client/guard.rs"), "pub struct SendLimit {") {
+            let key = if field == "max_wait" { "maxWaitSecs".to_owned() } else { camel(&field) };
+            let sample = json!({ "sendLimit": { key.clone(): 1 } });
+            options_from_value(sample).unwrap_or_else(|err| panic!("SendLimit::{field} as {key}: {err}"));
+        }
+    }
+
+    #[test]
+    fn option_typos_are_explained() {
+        let typo = options_from_value(json!({ "sendLimt": false })).unwrap_err();
+        assert_eq!(typo.code(), "INVALID_ARGUMENT");
+        assert_eq!(typo.to_string(), "invalid argument: unknown option \"sendLimt\", did you mean \"sendLimit\"?");
+        let nested = options_from_value(json!({ "sendLimit": { "perChatPerMinut": 10 } })).unwrap_err();
+        assert!(nested.to_string().contains("perChatPerMinute"), "{nested}");
+        let odd = options_from_value(json!({ "zzz": 1 })).unwrap_err();
+        assert!(odd.to_string().contains("valid ones: store, pushName"), "{odd}");
+        assert!(options_from_value(json!({ "version": "2.3000" })).is_ok(), "checked when the session opens");
+        let options =
+            options_from_value(json!({ "sendLimit": { "maxWaitSecs": 0, "perGroupPerMinute": 90 } })).unwrap();
+        let limit = options.send_limit.unwrap().limit().unwrap();
+        assert_eq!((limit.max_wait, limit.per_group_per_minute, limit.per_chat_per_minute), (Duration::ZERO, 90, 40));
+    }
 
     #[test]
     fn numbers_and_jids() {

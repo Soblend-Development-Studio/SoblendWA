@@ -159,6 +159,7 @@ export interface Stats {
   awaitingRecovery: number
   reconnects: number
   rateLimited: number
+  rateDelayed: number
   mediaUploaded: number
   mediaReused: number
   outboxResent: number

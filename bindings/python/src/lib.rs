@@ -408,7 +408,7 @@ impl FakeServer {
         if let serde_json::Value::Object(fields) = &mut value {
             fields.entry("store").or_insert_with(|| serde_json::json!({ "type": "memory" }));
         }
-        let mut options: bridge::Options = serde_json::from_value(value).map_err(fail)?;
+        let mut options = bridge::options_from_value(value).map_err(fail)?;
         options.fake = Some(bridge::fake_link(&self.fake, &phone));
         let session = bridge::run(Session::open(options)).await.map_err(fail)?;
         Ok(NativeClient { session })

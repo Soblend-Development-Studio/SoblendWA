@@ -128,11 +128,29 @@ async def main() -> None:
         assert elapsed < one_by_one, f"one after another takes at least {one_by_one} s, this took {elapsed:.2f} s"
 
     async def send_limit() -> None:
-        strict = await fake.connect("5215555555555", send_limit={"per_chat_burst": 2, "per_chat_per_minute": 2})
+        strict = await fake.connect(
+            "5215555555555", send_limit={"per_chat_burst": 2, "per_chat_per_minute": 2, "max_wait_secs": 0}
+        )
         await strict.send_text(ANA, "uno")
         await strict.send_text(ANA, "dos")
         await rejects(strict.send_text(ANA, "tres"), "RATE_LIMITED")
         await strict.disconnect()
+
+        patient = await fake.connect("5215577777777", send_limit={"per_chat_burst": 2, "per_chat_per_minute": 240})
+        names = [f"en fila {i}" for i in range(5)]
+        await asyncio.gather(*(patient.send_text(ANA, text) for text in names))
+        arrived = []
+        async for event in ana.events():
+            if event["type"] == "message" and event.get("text") in names:
+                arrived.append(event["text"])
+                if len(arrived) == len(names):
+                    break
+        assert arrived == names, arrived
+        assert patient.stats()["rateDelayed"] == 3
+        await patient.disconnect()
+
+        typo = await rejects(fake.connect("5215588888888", send_limt=False), "INVALID_ARGUMENT")
+        assert 'did you mean "sendLimit"' in typo.message, typo.message
 
     async def burst_in_order() -> None:
         total = 300
@@ -167,7 +185,7 @@ async def main() -> None:
     await step("un timeout no se come los eventos que siguen", timeout_keeps_events)
     await step("imágenes subidas compartidas entre bots", shared_uploads)
     await step("archivos seguidos suben juntos y llegan en orden", uploads_overlap)
-    await step("límite de envíos configurable", send_limit)
+    await step("límite de envíos: falla, espera en fila o se apaga", send_limit)
     await step("ráfaga de mensajes llega completa y en orden", burst_in_order)
     await step("reiniciar una sola cuenta", restart_one)
     await step("métricas con tiempos por fase", phase_timings)

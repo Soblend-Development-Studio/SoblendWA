@@ -160,8 +160,26 @@ export interface ClientOptions {
   proxy?: string
   chatStore?: { path?: string; limit?: number }
   mediaStore?: BuiltinStore
+  mediaCache?: boolean | { ttlSecs: number }
   retryDeadlineSecs?: number
-  sendLimit?: boolean | { perMinute?: number; burst?: number; perChatPerMinute?: number; perChatBurst?: number }
+  sendLimit?: boolean | SendLimitOptions
+  outbox?: boolean
+  workers?: number
+  version?: string | [number, number, number]
+  queryTimeoutSecs?: number
+  connectTimeoutSecs?: number
+  keepaliveSecs?: number
+}
+
+export interface SendLimitOptions {
+  perMinute?: number
+  burst?: number
+  perChatPerMinute?: number
+  perChatBurst?: number
+  perGroupPerMinute?: number
+  perGroupBurst?: number
+  /** How long a send over the limit waits in its chat's line before failing with RATE_LIMITED. 0 fails at once. */
+  maxWaitSecs?: number
 }
 
 export type InteractiveButton =

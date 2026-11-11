@@ -120,20 +120,14 @@ pub struct NativeClient {
 impl NativeClient {
     #[napi(factory)]
     pub async fn open(options: Option<Value>) -> Result<NativeClient> {
-        let options = match options {
-            Some(value) => serde_json::from_value(value).map_err(fail)?,
-            None => bridge::Options::default(),
-        };
+        let options = bridge::options_from_value(options.unwrap_or(Value::Null)).map_err(fail)?;
         let session = bridge::run(Session::open(options)).await.map_err(fail)?;
         Ok(NativeClient { session })
     }
 
     #[napi(factory)]
     pub async fn open_with_store(options: Option<Value>, store: StoreCallback) -> Result<NativeClient> {
-        let mut options: bridge::Options = match options {
-            Some(value) => serde_json::from_value(value).map_err(fail)?,
-            None => bridge::Options::default(),
-        };
+        let mut options = bridge::options_from_value(options.unwrap_or(Value::Null)).map_err(fail)?;
         options.custom_store = Some(bridge::CustomStore(std::sync::Arc::new(JsStore(store))));
         let session = bridge::run(Session::open(options)).await.map_err(fail)?;
         Ok(NativeClient { session })
@@ -560,7 +554,7 @@ impl FakeServer {
         if let Value::Object(fields) = &mut options {
             fields.entry("store").or_insert_with(|| serde_json::json!({ "type": "memory" }));
         }
-        let mut options: bridge::Options = serde_json::from_value(options).map_err(fail)?;
+        let mut options = bridge::options_from_value(options).map_err(fail)?;
         options.fake = Some(bridge::fake_link(&self.fake, &phone));
         let session = bridge::run(Session::open(options)).await.map_err(fail)?;
         Ok(NativeClient { session })

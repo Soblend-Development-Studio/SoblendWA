@@ -13,6 +13,16 @@ use crate::store::KeyKind;
 
 const LOGGED_OUT_CODES: [&str; 2] = ["401", "419"];
 
+fn one_line(node: &Node) -> String {
+    let attrs: String = node.attrs.iter().map(|(key, value)| format!(" {key}=\"{value}\"")).collect();
+    let children: Vec<String> = node.nodes().iter().map(one_line).collect();
+    if children.is_empty() {
+        format!("<{}{attrs}/>", node.tag)
+    } else {
+        format!("<{}{attrs}>{}</{}>", node.tag, children.join(""), node.tag)
+    }
+}
+
 impl Client {
     pub(super) async fn handle_node(&self, node: Node) {
         let result = match node.tag.as_ref() {
@@ -25,6 +35,14 @@ impl Client {
             "chatstate" => self.on_chat_state(&node),
             "ack" => {
                 self.on_ack(&node);
+                Ok(())
+            }
+            // Reactions to your own status updates come as <status type="reaction">. Left without an ack, the
+            // server ends the stream 50 minutes later and sends it again on the next connection, forever.
+            // Found by the soak on a real number: 17 forced reconnects in 19 h.
+            "status" => {
+                self.send_ack(&node, None);
+                self.emit(Event::Unhandled(node));
                 Ok(())
             }
             _ => {
@@ -48,7 +66,42 @@ impl Client {
         true
     }
 
+    // WhatsApp wants an ack for every message, receipt, notification and call. What hasn't been acked yet is
+    // kept (tag, type and child tags only) so a stream error that points at an ack can say which one it was.
+    pub(super) fn expect_ack(&self, node: &Node) {
+        if matches!(node.tag.as_ref(), "iq" | "ib" | "ack" | "presence" | "chatstate" | "success" | "failure") {
+            return;
+        }
+        let Some(id) = node.attr_str("id") else { return };
+        let mut summary = format!("<{}", node.tag);
+        if let Some(kind) = node.attr_str("type") {
+            summary.push_str(&format!(" type=\"{kind}\""));
+        }
+        let children: Vec<&str> = node.nodes().iter().map(|child| child.tag.as_ref()).collect();
+        summary.push_str(&format!("> [{}]", children.join(",")));
+        let mut unacked = self.inner.unacked.lock();
+        if unacked.len() >= 4096 {
+            unacked.retain(|_, (_, at)| at.elapsed() < std::time::Duration::from_secs(600));
+        }
+        unacked.insert(format!("{}:{id}", node.tag), (summary, std::time::Instant::now()));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unacked_count(&self) -> usize {
+        self.inner.unacked.lock().len()
+    }
+
+    fn still_unacked(&self) -> Vec<String> {
+        let unacked = self.inner.unacked.lock();
+        let mut old: Vec<_> = unacked.values().filter(|(_, at)| at.elapsed().as_secs() >= 30).collect();
+        old.sort_by_key(|(_, at)| *at);
+        old.iter().take(3).map(|(summary, at)| format!("{summary} {}s", at.elapsed().as_secs())).collect()
+    }
+
     pub(crate) fn send_ack(&self, node: &Node, error: Option<u16>) {
+        if let Some(id) = node.attr_str("id") {
+            self.inner.unacked.lock().remove(&format!("{}:{id}", node.tag));
+        }
         let mut ack = Node::new("ack").attr("class", node.tag.clone());
         if let Some(id) = node.get("id") {
             ack.set_attr("id", id.clone());
@@ -215,7 +268,13 @@ impl Client {
                 code: Some(401),
             },
             (_, Some("conflict")) => Outcome::Replaced,
-            (code, tag) => Outcome::Lost(format!("stream error {code} {}", tag.unwrap_or("unknown"))),
+            (code, _) => {
+                let detail = reason.map_or_else(|| "without detail".to_owned(), one_line);
+                let unacked = self.still_unacked();
+                let unacked =
+                    if unacked.is_empty() { String::new() } else { format!("; unacked: {}", unacked.join(", ")) };
+                Outcome::Lost(format!("stream error {code} {detail}{unacked}"))
+            }
         };
         outcome
     }

@@ -42,11 +42,13 @@ pub struct ServerConfig {
     pub chat_store: bool,
     pub fake: Option<Arc<soblendwa::testing::FakeWhatsApp>>,
     pub link_previews: bool,
+    pub client: Options,
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
         ServerConfig {
+            client: Options::default(),
             token: None,
             storage: Storage::Directory(PathBuf::from("sessions")),
             fake: None,
@@ -136,18 +138,20 @@ impl Hub {
             creds: fake.account(&fake_phone(name)),
         });
         let store = if fake.is_some() { StoreOptions::Memory } else { store };
-        Options {
-            store,
-            fake,
-            link_previews: Some(soblendwa_bridge::LinkPreviewOptions {
+        // --options applies to every session; the storage and the fake link stay the server's.
+        let mut options = self.config.client.clone();
+        options.link_previews = options.link_previews.or_else(|| {
+            Some(soblendwa_bridge::LinkPreviewOptions {
                 enabled: Some(self.config.link_previews),
                 ..Default::default()
-            }),
-            push_name: self.config.push_name.clone(),
-            proxy: self.config.proxy.clone(),
-            chat_store: self.config.chat_store.then_some(ChatStoreOptions { path: chats, limit: None }),
-            ..Default::default()
-        }
+            })
+        });
+        options.push_name = options.push_name.or_else(|| self.config.push_name.clone());
+        options.proxy = options.proxy.or_else(|| self.config.proxy.clone());
+        options.chat_store = options
+            .chat_store
+            .or_else(|| self.config.chat_store.then_some(ChatStoreOptions { path: chats, limit: None }));
+        Options { store, fake, ..options }
     }
 
     pub async fn open(self: &Arc<Self>, name: &str) -> Result<Arc<Live>, String> {

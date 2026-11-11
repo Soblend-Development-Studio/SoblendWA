@@ -171,15 +171,44 @@ async function main() {
     assert.ok(stats.sendTimings.totalMicros.p95 >= stats.sendTimings.totalMicros.p50)
   })
 
-  await step('límite de envíos configurable', async () => {
-    const strict = await fake.connect('5215544444444', { sendLimit: { perChatBurst: 2, perChatPerMinute: 2 } })
+  await step('límite de envíos: falla, espera en fila o se apaga', async () => {
+    const strict = await fake.connect('5215544444444', {
+      sendLimit: { perChatBurst: 2, perChatPerMinute: 2, maxWaitSecs: 0 },
+    })
     await strict.sendText(ANA, 'uno')
     await strict.sendText(ANA, 'dos')
-    await rejects(strict.sendText(ANA, 'tres'), 'RATE_LIMITED')
+    const refused = await rejects(strict.sendText(ANA, 'tres'), 'RATE_LIMITED')
+    assert.match(refused.message, /send limit/)
+
+    const patient = await fake.connect('5215577777777', { sendLimit: { perChatBurst: 2, perChatPerMinute: 240 } })
+    const names = Array.from({ length: 5 }, (_, i) => `en fila ${i}`)
+    const arrived = []
+    const done = new Promise((resolve) => {
+      const listener = (m) => {
+        if (!names.includes(m.text)) return
+        arrived.push(m.text)
+        if (arrived.length === names.length) {
+          ana.off('message', listener)
+          resolve()
+        }
+      }
+      ana.on('message', listener)
+    })
+    await Promise.all(names.map((text) => patient.sendText(ANA, text)))
+    await done
+    assert.deepEqual(arrived, names)
+    assert.equal(patient.stats().rateDelayed, 3)
+
     const free = await fake.connect('5215555555555', { sendLimit: false })
     await Promise.all(Array.from({ length: 100 }, (_, i) => free.sendText(ANA, `rápido ${i}`)))
     await strict.close()
+    await patient.close()
     await free.close()
+  })
+
+  await step('una opción mal escrita se explica', async () => {
+    const error = await rejects(fake.connect('5215588888888', { sendLimt: false }), 'INVALID_ARGUMENT')
+    assert.match(error.message, /did you mean "sendLimit"/)
   })
 
   await step('ráfaga de mensajes llega completa y en orden', async () => {

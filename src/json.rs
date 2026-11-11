@@ -449,6 +449,7 @@ impl crate::client::Stats {
             "awaitingRecovery": self.awaiting_recovery,
             "reconnects": self.reconnects,
             "rateLimited": self.rate_limited,
+            "rateDelayed": self.rate_delayed,
             "mediaUploaded": self.media_uploaded,
             "mediaReused": self.media_reused,
             "outboxResent": self.outbox_resent,

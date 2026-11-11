@@ -48,6 +48,18 @@ struct Args {
     fake: bool,
     #[arg(long = "session", default_value = "default")]
     sessions: Vec<String>,
+    #[arg(long, env = "SOBLENDWA_OPTIONS")]
+    options: Option<String>,
+}
+
+fn client_options(raw: Option<&str>) -> Result<soblendwa_bridge::Options, String> {
+    let Some(raw) = raw else { return Ok(soblendwa_bridge::Options::default()) };
+    let text = match raw.strip_prefix('@') {
+        Some(path) => std::fs::read_to_string(path).map_err(|err| format!("--options {raw}: {err}"))?,
+        None => raw.to_owned(),
+    };
+    let value: Value = serde_json::from_str(&text).map_err(|err| format!("--options is not valid JSON: {err}"))?;
+    soblendwa_bridge::options_from_value(value).map_err(|err| format!("--options: {err}"))
 }
 
 fn rand_jitter() -> u32 {
@@ -97,7 +109,12 @@ async fn main() -> std::io::Result<()> {
     } else {
         None
     };
+    let client = client_options(args.options.as_deref()).unwrap_or_else(|err| {
+        eprintln!("{err}");
+        std::process::exit(2)
+    });
     let hub = Hub::new(ServerConfig {
+        client,
         token: args.token.clone(),
         storage,
         webhook: args.webhook.clone(),

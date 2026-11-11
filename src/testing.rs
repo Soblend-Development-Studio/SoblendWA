@@ -1564,7 +1564,14 @@ mod tests {
         let fake = FakeWhatsApp::start().await.unwrap();
         let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
         store.save_creds(&fake.account(BOT)).await.unwrap();
-        let limit = SendLimit { per_minute: 600, burst: 100, per_chat_per_minute: 6, per_chat_burst: 3 };
+        let limit = SendLimit {
+            per_minute: 600,
+            burst: 100,
+            per_chat_per_minute: 6,
+            per_chat_burst: 3,
+            max_wait: Duration::ZERO,
+            ..Default::default()
+        };
         let (bot, _bot_events) = fake.connect_with(fake.builder().store(store).send_limit(Some(limit))).await.unwrap();
         let (_ana, mut ana_events) = fake.connect(ANA).await.unwrap();
 
@@ -1578,6 +1585,87 @@ mod tests {
         for round in 0..3 {
             assert_eq!(next_text(&mut ana_events).await.text(), Some(format!("spam {round}").as_str()));
         }
+    }
+
+    #[tokio::test]
+    async fn stream_error_says_what_it_was() {
+        let fake = FakeWhatsApp::start().await.unwrap();
+        let (bot, mut bot_events) = fake.connect(BOT).await.unwrap();
+        let (ana, _ana_events) = fake.connect(ANA).await.unwrap();
+        ana.send_text(&Jid::phone(BOT), "hola").await.unwrap();
+        next_text(&mut bot_events).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(bot.unacked_count(), 0, "everything the server sent was acked");
+
+        let reaction = Node::new("status")
+            .attr("id", "A519A124FAEDA61D342E51A3FEB1EC6B")
+            .attr("type", "reaction")
+            .attr("from", Jid::phone(ANA))
+            .child_node(Node::new("reaction").attr("code", "👍"));
+        fake.push_node(BOT, reaction);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(bot.unacked_count(), 0, "a reaction to our status needs its ack, or the server cuts the stream");
+
+        let ack = Node::new("ack").attr("id", "3EB0AB12").attr("class", "message").attr("type", "text");
+        fake.push_node(BOT, Node::new("stream:error").child_node(ack));
+        let reason = next_event(&mut bot_events, |event| match event {
+            Event::Disconnected { reason: DisconnectReason::ConnectionLost(reason), .. } => Some(reason),
+            _ => None,
+        })
+        .await;
+        assert_eq!(reason, r#"stream error  <ack id="3EB0AB12" class="message" type="text"/>"#);
+    }
+
+    #[tokio::test]
+    async fn over_the_limit_waits_in_line() {
+        let fake = FakeWhatsApp::start().await.unwrap();
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        store.save_creds(&fake.account(BOT)).await.unwrap();
+        let limit = SendLimit {
+            per_chat_per_minute: 240,
+            per_chat_burst: 2,
+            max_wait: Duration::from_secs(5),
+            ..Default::default()
+        };
+        let (bot, _bot_events) = fake.connect_with(fake.builder().store(store).send_limit(Some(limit))).await.unwrap();
+        let (_ana, mut ana_events) = fake.connect(ANA).await.unwrap();
+        let chat = Jid::phone(ANA);
+
+        let started = std::time::Instant::now();
+        let sends = futures_util::future::join_all((0..6).map(|i| bot.send_text(&chat, format!("en fila {i}")))).await;
+        let elapsed = started.elapsed();
+        assert!(sends.iter().all(Result::is_ok), "{sends:?}");
+        for i in 0..6 {
+            assert_eq!(next_text(&mut ana_events).await.text(), Some(format!("en fila {i}").as_str()));
+        }
+        assert!(elapsed >= Duration::from_millis(900), "4 sends over the burst at 4/s, took {elapsed:?}");
+        let stats = bot.stats();
+        assert_eq!((stats.rate_delayed, stats.rate_limited), (4, 0));
+        assert!(stats.send_timings.queued.max >= Duration::from_millis(200), "{:?}", stats.send_timings.queued);
+    }
+
+    #[tokio::test]
+    async fn waiting_gives_up_when_the_slot_is_too_far() {
+        let fake = FakeWhatsApp::start().await.unwrap();
+        let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+        store.save_creds(&fake.account(BOT)).await.unwrap();
+        let limit = SendLimit {
+            per_chat_per_minute: 6,
+            per_chat_burst: 1,
+            max_wait: Duration::from_secs(2),
+            ..Default::default()
+        };
+        let (bot, _bot_events) = fake.connect_with(fake.builder().store(store).send_limit(Some(limit))).await.unwrap();
+        let (_ana, _ana_events) = fake.connect(ANA).await.unwrap();
+        bot.send_text(&Jid::phone(ANA), "uno").await.unwrap();
+        let started = std::time::Instant::now();
+        let refused = bot.send_text(&Jid::phone(ANA), "dos").await.unwrap_err();
+        assert!(started.elapsed() < Duration::from_millis(500), "the next slot is 10 s away, no point waiting");
+        match refused {
+            Error::RateLimited { retry_after, .. } => assert!(retry_after > Duration::from_secs(9), "{retry_after:?}"),
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+        assert_eq!(bot.stats().rate_limited, 1);
     }
 
     async fn quiet_for(events: &mut EventStream, wait: Duration, mut unwanted: impl FnMut(&Event) -> bool) {

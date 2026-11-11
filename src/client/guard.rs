@@ -23,11 +23,32 @@ pub struct SendLimit {
     pub burst: u32,
     pub per_chat_per_minute: u32,
     pub per_chat_burst: u32,
+    pub per_group_per_minute: u32,
+    pub per_group_burst: u32,
+    pub max_wait: Duration,
 }
 
 impl Default for SendLimit {
     fn default() -> Self {
-        SendLimit { per_minute: 240, burst: 60, per_chat_per_minute: 40, per_chat_burst: 15 }
+        SendLimit {
+            per_minute: 240,
+            burst: 60,
+            per_chat_per_minute: 40,
+            per_chat_burst: 15,
+            per_group_per_minute: 40,
+            per_group_burst: 15,
+            max_wait: Duration::from_secs(30),
+        }
+    }
+}
+
+impl SendLimit {
+    fn for_chat(&self, chat: &Jid) -> (u32, u32) {
+        if chat.is_group() {
+            (self.per_group_per_minute, self.per_group_burst)
+        } else {
+            (self.per_chat_per_minute, self.per_chat_burst)
+        }
     }
 }
 
@@ -63,13 +84,14 @@ pub(crate) struct Limiter {
 
 impl Limiter {
     fn admit(&self, limit: &SendLimit, chat: &Jid) -> std::result::Result<(), Duration> {
+        let (per_minute, burst) = limit.for_chat(chat);
         let mut global = self.global.lock();
         let global = global.get_or_insert_with(|| Bucket::full(limit.burst));
         global.refill(limit.per_minute, limit.burst);
-        let mut chat_bucket = *self.chats.entry(chat.clone()).or_insert_with(|| Bucket::full(limit.per_chat_burst));
-        chat_bucket.refill(limit.per_chat_per_minute, limit.per_chat_burst);
+        let mut chat_bucket = *self.chats.entry(chat.clone()).or_insert_with(|| Bucket::full(burst));
+        chat_bucket.refill(per_minute, burst);
         if global.tokens < 1.0 || chat_bucket.tokens < 1.0 {
-            let wait = global.wait_for_one(limit.per_minute).max(chat_bucket.wait_for_one(limit.per_chat_per_minute));
+            let wait = global.wait_for_one(limit.per_minute).max(chat_bucket.wait_for_one(per_minute));
             self.chats.insert(chat.clone(), chat_bucket);
             return Err(wait);
         }
@@ -93,6 +115,7 @@ pub(crate) struct Counters {
     pub duplicates: AtomicU64,
     pub reconnects: AtomicU64,
     pub rate_limited: AtomicU64,
+    pub rate_delayed: AtomicU64,
     pub media_uploaded: AtomicU64,
     pub media_reused: AtomicU64,
     pub outbox_resent: AtomicU64,
@@ -129,6 +152,7 @@ pub struct Stats {
     pub awaiting_recovery: usize,
     pub reconnects: u64,
     pub rate_limited: u64,
+    pub rate_delayed: u64,
     pub media_uploaded: u64,
     pub media_reused: u64,
     pub outbox_resent: u64,
@@ -241,6 +265,7 @@ impl Client {
             awaiting_recovery: self.inner.awaiting_retry.len(),
             reconnects: read(&counters.reconnects),
             rate_limited: read(&counters.rate_limited),
+            rate_delayed: read(&counters.rate_delayed),
             media_uploaded: read(&counters.media_uploaded),
             media_reused: read(&counters.media_reused),
             outbox_resent: read(&counters.outbox_resent),
@@ -254,17 +279,45 @@ impl Client {
         }
     }
 
+    fn refused(&self, chat: &Jid, retry_after: Duration) -> Error {
+        Counters::bump(&self.inner.counters.rate_limited);
+        tracing::warn!(%chat, ?retry_after, "send refused by the send limit");
+        Error::RateLimited { chat: chat.to_string(), retry_after }
+    }
+
+    // With max_wait at zero a send over the limit fails right here, before any upload. Otherwise admission
+    // happens in the chat's lane (throttle), so the waiting sends keep their order.
     pub(crate) fn admit_send(&self, chat: &Jid) -> Result<()> {
         let Some(limit) = &self.inner.config.send_limit else { return Ok(()) };
-        if chat.is_status_broadcast() {
+        if chat.is_status_broadcast() || !limit.max_wait.is_zero() {
             return Ok(());
         }
-        match self.inner.limiter.admit(limit, chat) {
-            Ok(()) => Ok(()),
-            Err(retry_after) => {
-                Counters::bump(&self.inner.counters.rate_limited);
-                tracing::warn!(%chat, ?retry_after, "send refused by the send limit");
-                Err(Error::RateLimited { chat: chat.to_string(), retry_after })
+        self.inner.limiter.admit(limit, chat).map_err(|retry_after| self.refused(chat, retry_after))
+    }
+
+    // `deadline` is max_wait after the call, not after reaching the front of the line, so a send never waits
+    // longer than max_wait in total. Gives up early when the next free slot is already past the deadline.
+    pub(crate) async fn throttle(&self, chat: &Jid, deadline: Instant) -> Result<Duration> {
+        let Some(limit) = &self.inner.config.send_limit else { return Ok(Duration::ZERO) };
+        if chat.is_status_broadcast() || limit.max_wait.is_zero() {
+            return Ok(Duration::ZERO);
+        }
+        let started = Instant::now();
+        let mut slept = false;
+        loop {
+            match self.inner.limiter.admit(limit, chat) {
+                Ok(()) if slept => {
+                    Counters::bump(&self.inner.counters.rate_delayed);
+                    return Ok(started.elapsed());
+                }
+                Ok(()) => return Ok(Duration::ZERO),
+                Err(retry_after) if Instant::now() + retry_after > deadline => {
+                    return Err(self.refused(chat, retry_after));
+                }
+                Err(retry_after) => {
+                    slept = true;
+                    tokio::time::sleep(retry_after.max(Duration::from_millis(1))).await;
+                }
             }
         }
     }
@@ -343,7 +396,14 @@ mod tests {
     #[test]
     fn runaway_loop() {
         let limiter = Limiter::default();
-        let limit = SendLimit { per_minute: 600, burst: 50, per_chat_per_minute: 60, per_chat_burst: 5 };
+        let limit = SendLimit {
+            per_minute: 600,
+            burst: 50,
+            per_chat_per_minute: 60,
+            per_chat_burst: 5,
+            max_wait: Duration::ZERO,
+            ..Default::default()
+        };
         let spammed = Jid::phone("5219900000001");
         let admitted = (0..100).filter(|_| limiter.admit(&limit, &spammed).is_ok()).count();
         assert_eq!(admitted, 5);
@@ -353,6 +413,16 @@ mod tests {
         assert_eq!(others, 40);
         let more = (0..40).filter(|i| limiter.admit(&limit, &Jid::phone(&format!("52166{i:08}"))).is_ok()).count();
         assert_eq!(more, 5);
+    }
+
+    #[test]
+    fn groups_have_their_own_limit() {
+        let limiter = Limiter::default();
+        let limit = SendLimit { per_chat_burst: 2, per_group_burst: 6, ..Default::default() };
+        let group = Jid::group("120363000000000001");
+        let person = Jid::phone("5219900000002");
+        assert_eq!((0..10).filter(|_| limiter.admit(&limit, &group).is_ok()).count(), 6);
+        assert_eq!((0..10).filter(|_| limiter.admit(&limit, &person).is_ok()).count(), 2);
     }
 
     #[tokio::test]

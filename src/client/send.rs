@@ -154,9 +154,11 @@ impl Client {
         self.send_in_lane(&chat, Box::pin(self.deliver(&chat, message, options, false))).await
     }
 
+    // Resends from the outbox were already admitted once, so they skip the send limit.
     pub(crate) async fn resend(&self, chat: &Jid, message: Message, options: SendOptions) -> Result<String> {
         let chat = chat.to_non_device();
-        self.send_in_lane(&chat, Box::pin(self.deliver(&chat, message, options, true))).await
+        let work = Box::pin(self.deliver(&chat, message, options, true));
+        self.lane_send(&chat, false, std::future::ready(()), |()| work).await
     }
 
     pub(crate) async fn send_in_lane(
@@ -164,7 +166,7 @@ impl Client {
         chat: &Jid,
         work: impl std::future::Future<Output = Result<String>>,
     ) -> Result<String> {
-        self.send_in_lane_after(chat, std::future::ready(()), |()| work).await
+        self.lane_send(chat, true, std::future::ready(()), |()| work).await
     }
 
     pub(crate) async fn send_in_lane_after<E, Fut>(
@@ -176,7 +178,31 @@ impl Client {
     where
         Fut: std::future::Future<Output = Result<String>>,
     {
-        let (result, queued) = self.in_chat_lane_after(chat, early, work).await;
+        self.lane_send(chat, true, early, work).await
+    }
+
+    async fn lane_send<E, Fut>(
+        &self,
+        chat: &Jid,
+        limited: bool,
+        early: impl std::future::Future<Output = E>,
+        work: impl FnOnce(E) -> Fut,
+    ) -> Result<String>
+    where
+        Fut: std::future::Future<Output = Result<String>>,
+    {
+        let max_wait = self.inner.config.send_limit.map_or(Duration::ZERO, |limit| limit.max_wait);
+        let deadline = Instant::now() + max_wait;
+        let ((result, throttled), queued) = self
+            .in_chat_lane_after(chat, early, |early| async move {
+                let throttled = if limited { self.throttle(chat, deadline).await } else { Ok(Duration::ZERO) };
+                match throttled {
+                    Ok(throttled) => (work(early).await, throttled),
+                    Err(err) => (Err(err), Duration::ZERO),
+                }
+            })
+            .await;
+        let queued = queued + throttled;
         if let Ok(id) = &result {
             if !queued.is_zero() {
                 self.inner.sent.lock().note_queued(id, queued);

@@ -273,6 +273,16 @@ impl ClientBuilder {
         self
     }
 
+    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+        self.config.connect_timeout = timeout;
+        self
+    }
+
+    pub fn keepalive(mut self, interval: Duration) -> Self {
+        self.config.keepalive_interval = interval;
+        self
+    }
+
     pub fn media_cache(mut self, ttl: Option<Duration>) -> Self {
         self.config.media_cache_ttl = ttl;
         self
@@ -403,6 +413,7 @@ impl ClientBuilder {
             timing_window: Mutex::new(guard::TimingWindow::default()),
             in_flight: DashSet::new(),
             seen: Mutex::new(SeenMessages::default()),
+            unacked: Mutex::new(HashMap::new()),
             counters: guard::Counters::default(),
             limiter: guard::Limiter::default(),
             chat_lanes: DashMap::new(),
@@ -569,6 +580,7 @@ pub(crate) struct Inner {
     timing_window: Mutex<guard::TimingWindow>,
     in_flight: DashSet<String>,
     seen: Mutex<SeenMessages>,
+    unacked: Mutex<HashMap<String, (String, Instant)>>,
     counters: guard::Counters,
     limiter: guard::Limiter,
     chat_lanes: DashMap<Jid, Arc<tokio::sync::Mutex<()>>>,
@@ -891,6 +903,7 @@ impl Client {
         if self.end_on_terminal(&node) {
             return;
         }
+        self.expect_ack(&node);
         if node.tag == "success" {
             let generation = self.current_generation();
             let client = self.clone();

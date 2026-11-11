@@ -47,6 +47,9 @@ pub(crate) const FAMILIES: &[Family] = &[
     family("soblendwa_rate_limited_total", "counter", "Sends refused by the send limit", |s| {
         Some(s.rate_limited as f64)
     }),
+    family("soblendwa_rate_delayed_total", "counter", "Sends that waited in line for the send limit", |s| {
+        Some(s.rate_delayed as f64)
+    }),
     family("soblendwa_media_uploaded_total", "counter", "Media uploads", |s| Some(s.media_uploaded as f64)),
     family("soblendwa_media_reused_total", "counter", "Media sent again without uploading", |s| {
         Some(s.media_reused as f64)
