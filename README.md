@@ -142,17 +142,20 @@ Mediana de 3 corridas alternadas, con `tests/zapo/versus.cjs`:
 
 | | SoblendWA | zapo-js 1.11 |
 |---|---|---|
-| Privado, ida y vuelta p50 / p95 | **92 / 121 ms** | 186 / 228 ms |
-| Grupo, ida y vuelta p50 | **94 ms** | 110 ms |
-| Documento de 64 KB, p50 / p95 | **106** / 422 ms | 204 / **285** ms |
-| Ráfaga de 300, respuestas por segundo | **314** | 90 |
-| CPU del bot por mensaje | **1,6 ms** | 13,1 ms |
-| Memoria al terminar | **63 MB** | 125 MB |
-| Arrancar desde la base | **0,7 s** | 2,9 s |
+| Privado, ida y vuelta p50 / p95 | **90 / 107 ms** | 182 / 216 ms |
+| Grupo, ida y vuelta p50 | **92 ms** | 105 ms |
+| Documento de 64 KB, p50 / p95 | **98 / 213 ms** | 192 / 250 ms |
+| Ráfaga de 300, respuestas por segundo | **619** | 102 |
+| CPU del bot por mensaje | **1,5 ms** | 11,6 ms |
+| Memoria al terminar | **61 MB** | 126 MB |
+| Arrancar desde la base | **0,7 s** | 2,3 s |
 
-Ojo con estos números: es una sola máquina Windows, el servidor falso y sus contactos corren en Node en la misma
-máquina, y la memoria incluye a Node en los dos. El p95 de documentos es peor en SoblendWA, que llega al servidor de
-multimedia falso por un puente HTTP local porque solo confía en certificados reales. Lo de verdad con WhatsApp está en la
+Con internet de verdad de por medio (`--via`, un túnel PC → VPS → PC con unos 650 ms de ida y vuelta) la diferencia se
+mantiene: 458 contra 866 ms en privado, 441 contra 890 ms por documento, 124 contra 49 respuestas por segundo y 2,1
+contra 12,8 ms de CPU por mensaje.
+
+Ojo con estos números: el servidor de WhatsApp es el falso de zapo, la memoria incluye a Node en los dos y la ráfaga
+varía bastante entre corridas. Lo de verdad con WhatsApp está en la
 [prueba en producción](https://soblend-development-studio.github.io/SoblendWA/#estado-produccion), y para ver cuánto se va
 en cada fase con tu red usa `stats().sendTimings`.
 

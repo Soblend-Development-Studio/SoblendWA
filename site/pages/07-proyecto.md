@@ -87,7 +87,7 @@ lead: Cómo se compara con otras librerías, incluido lo que ellas tienen y Sobl
 | WhatsApp falso para pruebas | Incluido | — | — | `@zapo-js/fake-server` |
 | Llamadas con audio | — | — | — | `@zapo-js/voip` |
 | Actuar como teléfono principal | — | — | — | Sí |
-| Madurez | Versión 0.1, faltan pruebas largas | Años de uso | Años de uso | Estable desde la 1.0 |
+| Madurez | Versión {{version}}, con una [prueba larga en producción](#estado-produccion) en marcha | Años de uso | Años de uso | Estable desde la 1.0 |
 
 `—` significa que no viene incluido o que no lo encontramos en esa versión. Si algo cambió o nos equivocamos, [abre un issue](https://github.com/Soblend-Development-Studio/SoblendWA/issues) y lo corregimos.
 
@@ -125,7 +125,9 @@ Desde el 9 de noviembre de 2026 una cuenta personal real corre `examples/soak.rs
 | Memoria máxima | 27 MB |
 | Reconexiones | 25, cada una en 1,0 a 1,9 s |
 
-De las 25 reconexiones, 7 fueron cortes de red y 1 un `503` de WhatsApp. Las otras 17 eran un `stream:error` que llegaba exactamente 50 minutos después de cada conexión. Para encontrarlo, el motivo de la desconexión ahora trae el nodo completo, y en la siguiente corrida dijo `<ack class="status" type="reaction" …/>`: una reacción a un estado de la cuenta, que llega como `<status>` y que SoblendWA no confirmaba. WhatsApp la volvía a mandar en cada conexión y cortaba a los 50 minutos de no recibir el `ack`. Ya se confirma.
+De las 25 reconexiones, 7 fueron cortes de red y 1 un `503` de WhatsApp. Las otras 17 eran un `stream:error` que llegaba exactamente 50 minutos después de cada conexión. Para encontrarlo, el motivo de la desconexión ahora trae el nodo completo, y en la siguiente corrida dijo `<ack class="status" type="reaction" …/>`: una reacción a un estado de la cuenta, que llega como `<status>` y que SoblendWA no confirmaba. WhatsApp la volvía a mandar en cada conexión y cortaba a los 50 minutos de no recibir el `ack`. Ya se confirma: con el arreglo desplegado, la misma cuenta pasó 16 horas seguidas sin un solo `stream:error`; los 6 cortes de ese tiempo fueron caídas de red, y cada uno se recuperó solo.
+
+Al 11 de noviembre, con 1,6 días y 4 arranques: 46.260 mensajes recibidos, 110 sin descifrar al llegar (0,24 %, todos por sender key), 91 recuperados, 15 perdidos y 0 pánicos. Desde Node.js la memoria máxima es de 134 MB, porque incluye a V8; desde Rust eran 27 MB.
 
 El 10 de noviembre la misma sesión pasó a `bindings/node/soak.js`, la misma prueba hecha con el módulo de Node.js, sin volver a vincular. Así esa prueba cubre también Node.js en Linux con un teléfono real. Los números de arriba son del primer día; la prueba sigue y cuenta como estable cuando sume dos semanas.
 
@@ -145,7 +147,7 @@ Mensajes privados y de grupo entre cuentas, mensajes dañados o sin sender key q
 
 ## Probado en CI
 
-Las pruebas pasan en Linux, Windows y macOS, y el código compila con Rust 1.89. Se compilan 16 binarios para las distintas plataformas, y cada módulo de Node.js se carga en la suya. Los paquetes publicados se instalaron y ejecutaron en Windows; los de Linux y macOS no se han usado fuera del CI.
+Las pruebas pasan en Linux, Windows y macOS, y el código compila con Rust 1.89. Se compilan 16 binarios para las distintas plataformas, y cada módulo de Node.js se carga en la suya. En Linux, el módulo de Node.js corre la [prueba larga](#estado-produccion) con un número real desde el 10 de noviembre de 2026. En macOS los paquetes todavía no se han usado fuera del CI.
 
 ## Experimental {exp}
 
@@ -281,6 +283,16 @@ cargo run --release --example soak -- --pair 5215512345678
 
 Si prefieres Node.js, `node soak.js <carpeta>` (viene en `soblendwa-node`) hace exactamente lo mismo con la misma carpeta y el mismo reporte, así que puedes pasar de uno a otro sin volver a vincular.
 
+La versión de Node.js trae además comandos para provocar, con tu propio número, los casos que en la vida real dependen de la mala suerte:
+
+| Comando | Qué prueba | Qué tienes que ver |
+|---|---|---|
+| `!yowner mac` | Daña solo la sesión del bot con tu teléfono, como un disco corrupto | Manda un mensaje cualquiera desde el teléfono. En `!yowner` debe salir `bad_mac` recuperado |
+| `!yowner cola` | Te manda 3 mensajes y corta la conexión antes de que WhatsApp los confirme | `cola 1/3`, `2/3` y `3/3` una sola vez cada uno y en orden |
+| `!yowner media` y `!yowner reiniciar` | La multimedia guardada sobrevive a reiniciar el proceso | La segunda vez, después de reiniciar, dice que no se volvió a subir |
+
+`!yowner mac` no toca tu teléfono ni tus chats con otros: solo el estado del bot. Usan `simulate_outage` y `damage_sessions`, que existen con la feature `testing` para esto mismo. El aviso de cuenta bloqueada no tiene comando: provocarlo de verdad es arriesgar la cuenta.
+
 El reporte va en `<carpeta>/soak.jsonl` y solo guarda conteos y tipos de error, sin textos ni números. `cargo run --example soak -- --resumen` lo resume sin conectarse. Para dejarlo semanas en un servidor, córrelo como servicio de systemd con `Restart=on-failure`: si quitas el dispositivo desde el teléfono, termina sin error y no se vuelve a levantar solo.
 
 ## Cuando termines
@@ -314,9 +326,11 @@ SoblendWA es una implementación propia, y existe gracias a lo que documentaron 
 === versiones | Versiones y cambios | Proyecto
 lead: Esta documentación es de la versión {{version}}. Abajo está el historial completo, el mismo de `CHANGELOG.md`.
 
+{{release_note}}
+
 ## Qué versión usar
 
-Fija la versión exacta. En 0.x el número del medio puede romper cosas, así que una actualización de `0.1` a `0.2` merece leer la sección **Rompe** de abajo antes de cambiar.
+Fija la versión exacta que instalas, sin `^` ni `~`. En 0.x el número del medio puede romper cosas, así que antes de pasar de una versión `0.x` a la siguiente lee su sección **Rompe** abajo. La última publicada es la {{published}}.
 
 :::tabs
 ```toml Rust

@@ -19,7 +19,7 @@ MINOR = ".".join(VERSION.split(".")[:2])
 # A version written by hand goes stale with the next release. Pages say {{version}} or {{minor}}; an older
 # version is only allowed on a line that says it is older ("anterior").
 VERSION_MENTION = re.compile(
-    r'(?:(?:SoblendWA|soblendwa(?:-node|-client)?|versión|version)\s*(?:=\s*\{\s*version\s*=\s*|=\s*|==\s*|"?:\s*)?"?'
+    r'(?:(?:SoblendWA|soblendwa(?:-node|-client)?|[Vv]ersión|[Vv]ersion)\s*(?:=\s*\{\s*version\s*=\s*|=\s*|==\s*|"?:\s*)?"?'
     r'|\b[Ee]n |\|\s*)(\d+\.\d{1,2}(?:\.\d+)?)(?=[\s"|,)]|\.\s|\.$|$)'
 )
 
@@ -35,8 +35,27 @@ def stale_versions(path, text):
     return found
 
 
+# The changelog says whether this version is out: "## 0.2.0 (sin publicar)" until it gets its date. While it isn't,
+# the pages that tell you to pin it also say which one you can actually install.
+RELEASES = re.findall(r"(?m)^## (\d+\.\d+\.\d+) \(([^)]*)\)", (root / "CHANGELOG.md").read_text(encoding="utf-8"))
+UNRELEASED = any(version == VERSION and "sin publicar" in when for version, when in RELEASES)
+PUBLISHED = next((version for version, when in RELEASES if "sin publicar" not in when), VERSION)
+RELEASE_NOTE = (
+    f":::note La {VERSION} todavía no está publicada\n"
+    f"Esta documentación ya describe la {VERSION}. En crates.io, npm y PyPI la última es la {PUBLISHED}: "
+    f"lo nuevo de la {MINOR} está marcado en [Versiones y cambios](#versiones) y llega cuando se publique.\n:::"
+    if UNRELEASED
+    else ""
+)
+
+
 def expand(text):
-    return text.replace("{{version}}", VERSION).replace("{{minor}}", MINOR)
+    return (
+        text.replace("{{version}}", VERSION)
+        .replace("{{minor}}", MINOR)
+        .replace("{{published}}", PUBLISHED)
+        .replace("{{release_note}}", RELEASE_NOTE)
+    )
 
 
 def scan_api():

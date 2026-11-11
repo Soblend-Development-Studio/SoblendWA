@@ -488,6 +488,8 @@ lead: El [WhatsApp falso](#pruebas-falso), con el protocolo real. Requiere la fe
 @fn FakeWhatsApp media_uploads :: Cuántas subidas recibió.
 @fn FakeWhatsApp expire_media :: Caduca los archivos subidos.
 @fn FakeWhatsApp slow_uploads :: Hace que cada subida tarde eso, como un CDN lento.
+@fn Client simulate_outage :: Corta el socket como una red caída, sin avisar al servidor; la reconexión y el outbox siguen su curso normal. Feature `testing`.
+@fn Client damage_sessions :: Daña nuestro lado de la sesión Signal con un dispositivo, para probar el reintento con WhatsApp de verdad. Feature `testing`.
 @fn FakeWhatsApp create_group :: Crea un grupo. Devuelve su JID.
 @fn FakeWhatsApp drop_connections :: Corta la conexión de esa cuenta.
 @fn FakeWhatsApp refuse_connections :: Rechaza o admite sus conexiones.

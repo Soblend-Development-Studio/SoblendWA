@@ -1,8 +1,8 @@
 # Changelog
 
 Usamos [semver](https://semver.org/lang/es/). En 0.x, el número del medio puede romper cosas y el último solo
-arregla. Para no llevarte sorpresas fija la versión exacta: `"soblendwa-node": "0.2.0"` (sin `^`),
-`soblendwa = "=0.2.0"`, `soblendwa==0.2.0`.
+arregla. Para no llevarte sorpresas fija la versión exacta que instalas, sin `^`: `"soblendwa-node": "X.Y.Z"`,
+`soblendwa = "=X.Y.Z"`, `soblendwa==X.Y.Z`. Una versión dice "sin publicar" hasta que sale; entonces lleva su fecha.
 
 ## 0.2.0 (sin publicar)
 
@@ -48,6 +48,13 @@ arregla. Para no llevarte sorpresas fija la versión exacta: `"soblendwa-node": 
   documentos subidos en cada pedido, un grupo y el arranque desde la base.
 - `bindings/node/soak.js`: la prueba larga desde Node.js, con la misma carpeta y el mismo reporte que `examples/soak.rs`.
 - Un `stream:error` trae en el motivo de la desconexión el nodo completo y, si quedó algo sin confirmar, cuál era.
+- `tests/zapo/dry-run.cjs`: el simulacro de migración sobre todas las sesiones de una base de zapo, sin conectar nada.
+  Con la base de un bot real: 27 sesiones, 0 errores, 1,5 s.
+- `versus.cjs --via usuario@host`: la misma comparación con la red de verdad de por medio, por un túnel SSH de ida y
+  vuelta.
+- Con la feature `testing`: `simulate_outage()` y `damage_sessions(jid)` para probar con un número real el outbox y el
+  reintento; en `soak.js`, `!yowner cola`, `!yowner mac`, `!yowner media` y `!yowner reiniciar`.
+- Guía de equivalencias desde zapo, y cómo se detecta cada causa de `loggedOut`.
 - La fuente de la documentación vive en `site/`: la versión sale de `Cargo.toml`, el historial de este archivo, y el
   CI falla si `docs/index.html` quedó viejo, si hay un enlace roto, si una página menciona una versión que no es la
   actual o si un ejemplo de Rust no compila.
@@ -92,6 +99,12 @@ Medido en la misma máquina antes y después (`pipeline` y `throughput` en las p
 - Las reacciones a tus estados llegan como `<status type="reaction">` y no se confirmaban: WhatsApp cortaba la conexión
   50 minutos después y la volvía a mandar en cada reconexión, para siempre. Lo encontró la prueba larga con un número
   real (17 reconexiones forzadas en 19 horas) una vez que el motivo de la desconexión empezó a traer el nodo completo.
+  Con el arreglo, la misma cuenta pasó los 50 minutos sin cortes.
+- Después de un corte, el outbox reenviaba en desorden los mensajes del mismo segundo (`created_at` estaba en segundos).
+  Ahora cada mensaje lleva un orden en microsegundos que nunca se repite.
+- El primer archivo después de conectar esperaba un viaje más por los hosts de subida (`media_conn`); ahora se piden al
+  conectar. Y una subida que falla por una conexión ya cerrada reintenta sin volver a pedir hosts, salvo que WhatsApp
+  rechace la autorización. El p95 de documentos contra zapo pasó de 422 contra 285 ms a 213 contra 250 ms.
 - Dos hilos podían guardar la misma sesión Signal en orden invertido y dejar un ratchet viejo en el store. La ventana
   era de nanosegundos y nunca se vio, pero ahora cada sesión se guarda antes de soltar su lock.
 - Node: un listener que tiraba excepción cortaba los eventos, y una promesa rechazada podía tumbar el proceso.

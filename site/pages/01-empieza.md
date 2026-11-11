@@ -45,13 +45,15 @@ npm install soblendwa-client
 El mismo bot con zapo-js 1.11 y con SoblendWA, los dos guardando en SQLite, con 60 ms de red de por medio y subiendo documentos.
 
 :::stats
-92 ms :: ida y vuelta en privado (p50), frente a 186 ms
-1,6 ms :: de CPU por mensaje, frente a 13,1 ms
-63 MB :: de memoria con Node.js incluido, frente a 125 MB
-0,7 s :: para arrancar desde la base, frente a 2,9 s
+90 ms :: ida y vuelta en privado (p50), frente a 182 ms
+1,5 ms :: de CPU por mensaje, frente a 11,6 ms
+61 MB :: de memoria con Node.js incluido, frente a 126 MB
+0,7 s :: para arrancar desde la base, frente a 2,3 s
 :::
 
-El servidor de WhatsApp es falso y corre en la misma máquina; el método, lo que zapo hace mejor y cómo repetirlo están en [Rendimiento](#rendimiento).
+El servidor de WhatsApp es falso y corre en la misma máquina. Con internet de verdad de por medio la diferencia se mantiene: 458 contra 866 ms en privado. El método y cómo repetirlo están en [Rendimiento](#rendimiento).
+
+{{release_note}}
 
 ## Antes de usarlo
 
@@ -370,8 +372,23 @@ La sesión queda en el [almacenamiento](#almacenamiento) que elegiste y sobreviv
 | `SessionInvalidated` | `sessionInvalidated` | WhatsApp dejó de aceptar la sesión guardada: por ejemplo, se reinstaló WhatsApp en el teléfono o la vinculación caducó | `401` o `419` |
 | `UserLogout` | `userLogout` | Tu bot llamó a `logout()` | — |
 
+### Cómo se detecta {#vincular-causa-deteccion}
+
+La causa sale del nodo exacto que manda WhatsApp, no de adivinar por el texto:
+
+| Lo que llega | Cuándo | `cause` | `code` |
+|---|---|---|---|
+| `<stream:error code="401"><conflict type="device_removed"/></stream:error>` | Estando conectado, alguien quita el dispositivo desde el teléfono | `removedFromPhone` | `401` |
+| `<stream:error code="401">` con cualquier otro detalle | Estando conectado, WhatsApp invalida la sesión | `sessionInvalidated` | `401` |
+| `<failure reason="401"/>` o `<failure reason="419"/>` | Al iniciar sesión con las credenciales guardadas | `sessionInvalidated` | `401` o `419` |
+| Nada de WhatsApp: tu código llamó a `logout()` | SoblendWA manda `<remove-companion-device reason="user_initiated">` | `userLogout` | — |
+
+Lo que más confunde: si quitan el dispositivo **mientras el bot está apagado**, WhatsApp ya no manda `device_removed`. Al volver, el inicio de sesión falla con `failure 401` y la causa es `sessionInvalidated`, porque WhatsApp no dice por qué. Para tu bot, las dos significan lo mismo: hay que volver a vincular.
+
+Hay dos cosas que no son cierres de sesión. Si otra conexión entra con las mismas credenciales llega `<conflict type="replaced">`: es `disconnected` con motivo `replaced` y no se reconecta sola, para no pelear con la otra. Y un bloqueo de la cuenta (`failure` 402, 403 o 406) llega como [`accountBlocked`](#confiabilidad-bloqueo) y conserva la sesión.
+
 :::note Lo que WhatsApp no dice
-Cuando el teléfono quita un dispositivo, WhatsApp no dice si lo hizo el dueño a mano o si fue el teléfono por su cuenta. `removedFromPhone` cubre los dos casos. Un bloqueo de la cuenta no llega como cierre de sesión: llega como [`accountBlocked`](#confiabilidad-bloqueo), y la sesión se conserva.
+Cuando el teléfono quita un dispositivo, WhatsApp no dice si lo hizo el dueño a mano o si fue el teléfono por su cuenta. `removedFromPhone` cubre los dos casos.
 :::
 
 :::tabs

@@ -293,22 +293,45 @@ El mismo bot escrito con cada librería, cada uno en su proceso, contra el mismo
 
 | Mediana de 3 corridas alternadas | SoblendWA {{version}} | zapo-js 1.11 |
 |---|---|---|
-| Privado, ida y vuelta p50 / p95 | **92 / 121 ms** | 186 / 228 ms |
-| Grupo, ida y vuelta p50 | **94 ms** | 110 ms |
-| Documento de 64 KB, del pedido a recibirlo, p50 | **106 ms** | 204 ms |
-| Documento de 64 KB, p95 | 422 ms | **285 ms** |
-| Ráfaga de 300 mensajes, respuestas por segundo | **314** | 90 |
-| CPU del bot por mensaje, con SQLite | **1,6 ms** | 13,1 ms |
-| Memoria al terminar | **63 MB** | 125 MB |
-| Arrancar desde la base | **0,7 s** | 2,9 s |
+| Privado, ida y vuelta p50 / p95 | **90 / 107 ms** | 182 / 216 ms |
+| Grupo, ida y vuelta p50 | **92 ms** | 105 ms |
+| Documento de 64 KB, del pedido a recibirlo, p50 / p95 | **98 / 213 ms** | 192 / 250 ms |
+| Ráfaga de 300 mensajes, respuestas por segundo | **619** | 102 |
+| CPU del bot por mensaje, con SQLite | **1,5 ms** | 11,6 ms |
+| Memoria al terminar | **61 MB** | 126 MB |
+| Arrancar desde la base | **0,7 s** | 2,3 s |
 
 :::note Cómo leer estos números
-Una sola máquina Windows (Ryzen 5 7520U, Node.js 22), con el módulo de Node.js en release y zapo con su configuración por defecto. La memoria incluye a Node.js en los dos. SoblendWA solo confía en certificados reales, así que llega al servidor de multimedia falso por un puente HTTP local: un salto que zapo no tiene, y la razón más probable de que su p95 de documentos sea peor. El servidor falso y sus contactos corren en Node.js, en la misma máquina, y ponen un piso para los dos. Sigue sin ser WhatsApp de verdad: eso lo mide la [prueba en producción](#estado-produccion).
+Una sola máquina Windows (Ryzen 5 7520U, Node.js 22), con el módulo de Node.js en release y zapo con su configuración por defecto. La memoria incluye a Node.js en los dos, y la ráfaga varía bastante entre corridas (SoblendWA dio de 314 a 619). SoblendWA solo confía en certificados reales, así que llega al servidor de multimedia falso por un puente HTTP local, un salto que zapo no tiene.
+
+En la primera medición el p95 de documentos salía peor que el de zapo (422 contra 285 ms). Tenía dos causas: el primer archivo esperaba un viaje más por los hosts de subida, que ahora se piden al conectar, y el puente cerraba las conexiones inactivas a los 5 s, lo que obligaba a reintentar. Hoy el único documento lento es el primero, igual que en zapo.
+
+El servidor falso y sus contactos corren en Node.js, en la misma máquina, y ponen un piso para los dos. Sigue sin ser WhatsApp de verdad: eso lo mide la [prueba en producción](#estado-produccion).
 :::
 
 ```bash Terminal
 npm ci --prefix tests/zapo
 node tests/zapo/versus.cjs --rtt 60 --jitter 10 --runs 3
+```
+
+### Con internet de verdad de por medio {#rendimiento-internet}
+
+El mismo bot, pero sin red simulada: con `--via usuario@host`, el chat de cada bot va de la PC a un VPS por un túnel SSH y vuelve, así que cada paquete cruza internet dos veces, con su latencia y su jitter reales. Medido el 10 de noviembre de 2026 entre una PC en Colombia y un VPS, con unos 650 ms de ida y vuelta en ese camino.
+
+| Mediana de 3 corridas alternadas | SoblendWA {{version}} | zapo-js 1.11 |
+|---|---|---|
+| Privado, ida y vuelta p50 / p95 | **458 / 913 ms** | 866 / 1.058 ms |
+| Grupo, ida y vuelta p50 | **426 ms** | 447 ms |
+| Documento de 64 KB, p50 / p95 | **441 / 934 ms** | 890 / 1.038 ms |
+| Ráfaga de 300 mensajes, respuestas por segundo | **124** | 49 |
+| CPU del bot por mensaje | **2,1 ms** | 12,8 ms |
+| Memoria al terminar | **60 MB** | 103 MB |
+| Arrancar desde la base | **2,4 s** | 3,2 s |
+
+Con la red real la diferencia en privado se ve clara: SoblendWA contesta en una ida y vuelta y zapo necesita casi dos. En grupo están parejos. Lo que sigue sin ser real es el servidor: es el falso de zapo.
+
+```bash Terminal
+node tests/zapo/versus.cjs --via usuario@tu-vps --key ~/.ssh/tu-llave --runs 3
 ```
 
 ## Un bot de eco, sin red
@@ -747,9 +770,29 @@ Antes de tocar tus sesiones de verdad, hazlo con una copia. Así nadie tiene que
 - Cuando todo funcione, repite con la base real, cuenta por cuenta.
 :::
 
-:::warn Lo que todavía no está probado
-La conversión desde `@zapo-js/store-mongo` y `MongoStore` pasan contra un MongoDB real en el CI, pero con documentos de prueba que siguen el esquema exacto de zapo, no con una base que haya escrito zapo de verdad. Por eso la copia es obligatoria. Si tienes un MongoDB de pruebas, corre también `SOBLEND_MONGO_URL=mongodb://… cargo test --features "sqlite mongo" --lib mongo -- --ignored`.
-:::
+### Simulacro con una base de producción {#migrar-simulacro}
+
+`tests/zapo/dry-run.cjs` hace el simulacro sobre todas las sesiones de una base, sin conectar nada: para cada prefijo y cada sesión corre el `check`, una importación completa a un SQLite temporal, y comprueba que la cuenta importada ya está vinculada, es decir, que entraría sin QR. Solo imprime conteos y tiempos.
+
+```bash Terminal
+mongodump --db zapo --archive | mongorestore --archive --nsInclude "zapo.wa_*" --nsFrom "zapo.*" --nsTo "zapo_copia.*"
+node tests/zapo/dry-run.cjs mongodb://127.0.0.1:27017 zapo_copia
+```
+
+El `--nsInclude` copia solo las colecciones de zapo y deja fuera los datos de tu bot. Así salió con la base de un bot real en producción, el 10 de noviembre de 2026, un bot principal y sus subbots con un prefijo cada uno:
+
+| | |
+|---|---|
+| Colecciones de zapo | 573, en 68 prefijos |
+| Sesiones encontradas | 27, de las cuales 5 vinculadas y 22 que nunca terminaron de vincularse |
+| Importadas sin error | 27 de 27, con 0 elementos que no se pudieron convertir |
+| Convertido | 2.780 sesiones Signal, 2.899 sender keys y 3.484 pre-keys, los mismos conteos que los documentos de la copia |
+| Entrarían sin QR | Las 5 vinculadas |
+| Tiempo | 1,5 s en total; la cuenta más grande, 148 ms |
+
+Dos cosas de zapo no se convierten. `sender_key_distribution` dice a qué dispositivos ya les llegó tu clave de grupo; sin ella, tu primer mensaje en cada grupo después de migrar vuelve a repartirla a todos, una sola vez. Y `privacy_tokens`, que WhatsApp vuelve a emitir con el uso. Ninguna de las dos impide enviar ni recibir.
+
+Conectar una cuenta importada sí exige apagarla antes en zapo: una misma sesión en dos procesos se pisa.
 
 ## Desde zapo con MongoDB
 
@@ -841,6 +884,50 @@ Cada función pública de Baileys 7 tiene su equivalente.
 | `rejectCall`, `createCallLink`, `sendPresenceUpdate`, `presenceSubscribe` | `reject_call`, `create_call_link`, `send_chat_presence` / `set_presence`, `subscribe_presence` |
 | `requestPairingCode`, `logout`, `end`, `cleanDirtyBits`, `rotateSignedPreKey` | `request_pair_code`, `logout`, `disconnect`, `clean_dirty_bits`, `rotate_signed_pre_key` |
 | `relayMessage`, `sendNode`, `query` | `send_message_with`, `send_node`, `query` |
+
+## Equivalencias con zapo {#migrar-equivalencias-zapo}
+
+Sacadas de zapo-js 1.11. La columna de SoblendWA es la de Node.js; en Python son los mismos nombres en snake_case, y en Rust están en la [referencia](#ref-client).
+
+| zapo-js | SoblendWA (Node.js) |
+|---|---|
+| `new WaClient({ store, sessionId })` con `createStore({ backends, providers })` | `SoblendWA.create({ store })`; para seguir con tu base de zapo, [`importZapo`](#migrar) una vez |
+| `createSqliteStore`, `createMongoStore`, `createPostgresStore`, `createRedisStore` | `store: { type: 'sqlite' \| 'mongo' \| 'postgres' \| 'redis', … }`, o un [store en JavaScript](#almacenamiento-store-escrito-en-javascript) |
+| `collectionPrefix` de `@zapo-js/store-mongo`, un prefijo por subbot | `account` del store: varias cuentas en la misma base |
+| `client.connect()`, `client.disconnect()`, `client.logout()` | `bot.connect()`, `bot.close()`, `bot.logout()` |
+| `auth.requestPairingCode(phone)` | `bot.requestPairCode(phone)` |
+| `on('auth_qr')`, `on('auth_paired')` | `on('qr')`, `on('pairSuccess')` |
+| `on('connection')` con `status: 'open' \| 'close'` | `on('connected')`, `on('disconnected')`; cierre definitivo en `on('loggedOut')` con su [causa](#vincular-causa) |
+| `on('message')`, `event.key`, `event.message` | `on('message')`, `message.info`, `message.text`, `message.media` |
+| `on('message_unavailable')` | `on('undecryptableMessage')`, y después `messageRecovered` o `messageLost` |
+| `on('receipt')`, `on('presence')`, `on('chatstate')`, `on('call')` | `on('receipt')`, `on('presence')`, `on('chatState')`, `on('call')` |
+| `on('group')` | `on('groupUpdate')`, más `joinedGroup` / `leftGroup` cuando entra o sale el bot |
+| `on('picture')`, `on('privacy')`, `on('blocklist')` | `on('pictureChanged')`, `on('privacyChanged')`, `on('blocklistChanged')` |
+| `on('history_sync_chunk')` | `on('historySync')` |
+| `message.send(jid, 'texto')` | `bot.sendText(chat, 'texto')` |
+| `message.send(jid, { type: 'image' \| 'video' \| 'audio' \| 'document' \| 'sticker', media, … })` | `sendImage`, `sendVideo`, `sendAudio`, `sendDocument`, `sendSticker`, o `sendFile` desde disco |
+| `message.download`, `downloadToFile` | `bot.download(message)`, `bot.downloadToFile(message, ruta)` |
+| `message.requestMediaReupload` | Automático al descargar algo caducado |
+| `message.sendReceipt` | `bot.call('read', …)`, `markPlayed` |
+| `message.getReachoutTimelock`, `getNewChatMessageCapping` | `reachoutTimelock`, `newChatMessageCap` |
+| `group.createGroup`, `queryGroupMetadata`, `queryAllGroups` | `groupCreate`, `groupMetadata`, `joinedGroups` |
+| `group.addParticipants`, `removeParticipants`, `promoteParticipants`, `demoteParticipants` | `groupAdd`, `groupKick`, `groupPromote`, `groupDemote` |
+| `group.setSubject`, `setDescription`, `setSetting`, `setEphemeralDuration` | `groupSubject`, `groupDescription`, `groupSetting` |
+| `group.queryInviteCode`, `revokeInvite`, `joinGroupViaInvite`, `queryGroupInviteInfo` | `groupInviteCode`, `groupRevokeInvite`, `groupJoin`, `groupInviteInfo` |
+| `group.queryMembershipApprovalRequests`, `approve…` / `rejectMembershipRequests` | `groupRequests`, `groupRespondRequests` |
+| `group.leaveGroup` | `groupLeave` |
+| `profile.getProfilePicture`, `setProfilePicture`, `deleteProfilePicture` | `profilePicture`, `setProfilePicture`, `removeProfilePicture` |
+| `profile.getAboutStatus`, `setStatus`, `setPushName` | `fetchAbout`, `setAbout`, `setPushName` |
+| `profile.getLidsByPhoneNumbers` | `lidForPhone`, `phoneForLid` |
+| `privacy.blockUser`, `unblockUser`, `getBlocklist` | `block`, `unblock`, `blocklist` |
+| `privacy.getPrivacySettings`, `setPrivacySetting` | `privacySettings`, `setPrivacy` |
+| `presence.send`, `presence.sendChatstate`, `presence.subscribe` | `setOnline`, `typing`; suscribirse a la presencia de otro, solo en Rust con `subscribe_presence` |
+| `chat.setChatArchive`, `setChatPin`, `setChatMute`, `setChatRead`, `deleteChat`, `clearChat` | `modifyChat(chat, 'archive' \| 'pin' \| 'mute' \| 'read' \| 'delete' \| 'clear', segundos)`, y sus contrarios `unarchive`, `unpin`… |
+| `chat.setMessageStar`, `deleteMessageForMe` | En Rust `star_message` y `chat_modify`; `revoke` borra para todos |
+| `status.publishStatusMessage` | `send_status` en Rust |
+| `lowlevel` (nodos binarios) | `sendProto`, y en Rust `send_node` y `query` |
+
+Lo que zapo tiene y SoblendWA no: `mobile` (actuar como teléfono principal), `email`, llamadas con `@zapo-js/voip` y la telemetría WAM. Al revés, zapo no trae outbox persistente, límite de envíos con fila por chat, multimedia compartida entre cuentas ni el WhatsApp falso dentro del mismo proceso.
 
 === pruebas | Pruebas | Operación
 lead: Prueba tu bot sin arriesgar ningún número, y vigila que siga funcionando con el tiempo.
