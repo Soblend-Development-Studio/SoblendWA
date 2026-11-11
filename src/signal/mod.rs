@@ -331,6 +331,17 @@ impl SignalRepository {
         self.store.set(KeyKind::SenderKey, &name, record.to_bytes()).await
     }
 
+    #[cfg(feature = "testing")]
+    pub(crate) async fn scramble_session(&self, address: &str) -> Result<bool> {
+        let mut record = self.session(address).await?;
+        if !record.has_session() {
+            return Ok(false);
+        }
+        record.scramble();
+        self.store.set(KeyKind::Session, address, record.to_bytes()).await?;
+        Ok(true)
+    }
+
     pub(crate) async fn reset_own_sender_key(&self, group: &str, me: &str) -> Result<()> {
         let name = sender_key_name(group, me);
         let mut held = slot(&self.cache.sender_keys, &name).lock_owned().await;

@@ -1588,6 +1588,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn damaged_session_comes_back() {
+        let fake = FakeWhatsApp::start().await.unwrap();
+        let (bot, mut bot_events) = fake.connect(BOT).await.unwrap();
+        let (ana, _ana_events) = fake.connect(ANA).await.unwrap();
+        ana.send_text(&Jid::phone(BOT), "antes").await.unwrap();
+        next_text(&mut bot_events).await;
+
+        let ana_device = ana.me().unwrap();
+        assert_eq!(bot.damage_sessions(&ana_device).await.unwrap(), 1);
+        ana.send_text(&Jid::phone(BOT), "después").await.unwrap();
+        let error = next_event(&mut bot_events, |event| match event {
+            Event::UndecryptableMessage { error, .. } => Some(error),
+            _ => None,
+        })
+        .await;
+        assert!(error.to_lowercase().contains("mac"), "{error}");
+        let text = next_text(&mut bot_events).await;
+        assert_eq!(text.text(), Some("después"), "the retry brought it back");
+        assert_eq!(bot.stats().recovered, 1);
+    }
+
+    #[tokio::test]
+    async fn outage_resends_once() {
+        let fake = FakeWhatsApp::start().await.unwrap();
+        let (bot, mut bot_events) = fake.connect(BOT).await.unwrap();
+        let (_ana, mut ana_events) = fake.connect(ANA).await.unwrap();
+        bot.send_text(&Jid::phone(ANA), "hola").await.unwrap();
+        next_text(&mut ana_events).await;
+
+        fake.hold_acks(BOT, true);
+        for i in 0..3 {
+            bot.send_text(&Jid::phone(ANA), format!("en vuelo {i}")).await.unwrap();
+        }
+        bot.simulate_outage();
+        next_event(&mut bot_events, |event| matches!(event, Event::Connected).then_some(())).await;
+        fake.hold_acks(BOT, false);
+        let mut seen = Vec::new();
+        while seen.len() < 3 {
+            seen.push(next_text(&mut ana_events).await.text().unwrap().to_owned());
+        }
+        assert_eq!(seen, ["en vuelo 0", "en vuelo 1", "en vuelo 2"]);
+        quiet_for(&mut ana_events, Duration::from_millis(500), |event| matches!(event, Event::Message(_))).await;
+        assert_eq!(bot.stats().outbox_resent, 3);
+    }
+
+    #[tokio::test]
     async fn stream_error_says_what_it_was() {
         let fake = FakeWhatsApp::start().await.unwrap();
         let (bot, mut bot_events) = fake.connect(BOT).await.unwrap();

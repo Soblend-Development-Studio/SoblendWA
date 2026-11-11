@@ -348,6 +348,19 @@ pub(crate) struct SessionRecord {
 }
 
 impl SessionRecord {
+    #[cfg(feature = "testing")]
+    pub(crate) fn scramble(&mut self) {
+        for state in self.current.iter_mut().chain(self.previous.iter_mut()) {
+            state.root_key[0] ^= 0xff;
+            for chain in &mut state.receiving {
+                chain.ratchet[0] ^= 0xff;
+                if let Some(key) = chain.key.as_mut() {
+                    key[0] ^= 0xff;
+                }
+            }
+        }
+    }
+
     pub(crate) fn has_session(&self) -> bool {
         self.current.is_some()
     }

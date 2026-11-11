@@ -210,7 +210,7 @@ impl Message {
 }
 
 impl Client {
-    async fn media_conn(&self, force: bool) -> Result<(String, Vec<String>)> {
+    pub(super) async fn media_conn(&self, force: bool) -> Result<(String, Vec<String>)> {
         let mut cached = self.inner.media_conn.lock().await;
         if let Some(conn) = cached.as_ref().filter(|c| !force && c.expires > Instant::now()) {
             return Ok((conn.auth.clone(), conn.hosts.clone()));
@@ -315,8 +315,11 @@ impl Client {
         complete: impl Fn(&UploadResponse) -> bool,
     ) -> Result<UploadResponse> {
         let mut last_error = Error::Media("no upload hosts available".into());
-        for attempt in 0..2 {
-            let (auth, hosts) = self.media_conn(attempt > 0).await?;
+        // The second round only asks for new hosts when WhatsApp refused the auth. A connection the CDN had
+        // already closed fails the same way and just needs a fresh one; asking again cost one more round trip.
+        let mut refresh = false;
+        for _ in 0..2 {
+            let (auth, hosts) = self.media_conn(refresh).await?;
             for host in &hosts {
                 let url = match &self.inner.config.media_endpoint {
                     Some(endpoint) => format!("{endpoint}{path}/{token}"),
@@ -336,6 +339,7 @@ impl Client {
                 let parsed = match response {
                     Ok(response) if response.status().is_success() => response.json::<UploadResponse>().await,
                     Ok(response) => {
+                        refresh |= matches!(response.status().as_u16(), 401 | 403);
                         last_error = Error::Media(format!("upload to {host} failed with {}", response.status()));
                         continue;
                     }

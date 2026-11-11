@@ -212,9 +212,14 @@ impl Client {
             let devices = self.devices_for(&own).await?;
             self.ensure_sessions(&devices).await
         };
-        let (devices, groups) = tokio::join!(own_devices, self.joined_groups());
+        // media_conn too: without it the first upload after connecting waited one more round trip for the upload
+        // hosts, and with 20 documents that one was the whole p95 against zapo (336 ms vs about 100).
+        let (devices, groups, media) = tokio::join!(own_devices, self.joined_groups(), self.media_conn(false));
         if let Err(err) = devices {
             tracing::debug!(%err, "could not warm up our own devices");
+        }
+        if let Err(err) = media {
+            tracing::debug!(%err, "could not fetch the media hosts ahead of time");
         }
         let groups = match groups {
             Ok(groups) => groups,

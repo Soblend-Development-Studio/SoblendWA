@@ -63,6 +63,8 @@ pub const METHODS: &[&str] = &[
     "newChatMessageCap",
     "disappearingModes",
     "restart",
+    "simulateOutage",
+    "damageSessions",
     "groupMetadata",
     "groupCreate",
     "groupParticipants",
@@ -324,6 +326,11 @@ impl Session {
             "newChatMessageCap" => self.account("messageCap", Vec::new()).await,
             "disappearingModes" => self.account("disappearing", p.texts("jids")?).await,
             "restart" => done(self.restart().await?),
+            "simulateOutage" => {
+                self.client().simulate_outage();
+                Ok(Value::Null)
+            }
+            "damageSessions" => done(self.client().damage_sessions(&crate::jid(&p.text("jid")?)?).await?),
             "groupMetadata" => self.group_metadata(&p.text("chat")?).await,
             "groupCreate" => self.group_create(&p.text("subject")?, &p.list("participants")?).await,
             "groupParticipants" => {

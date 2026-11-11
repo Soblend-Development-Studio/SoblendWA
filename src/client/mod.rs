@@ -659,6 +659,38 @@ impl Client {
         }
     }
 
+    // Live-test tools, only with the `testing` feature. They let a long test on a real number exercise the
+    // recovery paths that otherwise wait for bad luck.
+
+    // What a dead network does: the socket goes away without a word to the server, and the client reconnects as
+    // usual. Anything sent and not yet acked must come back from the outbox, once.
+    #[cfg(feature = "testing")]
+    pub fn simulate_outage(&self) {
+        self.end_link(Outcome::Lost("simulated outage".into()));
+    }
+
+    // Scrambles our side of the Signal sessions with one device (device 0 if the jid has none), as a corrupted disk
+    // would. That device's next message fails with a bad MAC and has to come back through a retry. The other side
+    // is not touched. For our own number it also covers our LID. Returns how many sessions were scrambled.
+    #[cfg(feature = "testing")]
+    pub async fn damage_sessions(&self, jid: &Jid) -> Result<usize> {
+        let mut targets = vec![jid.clone()];
+        if self.me().is_some_and(|me| me.user == jid.user) {
+            if let Some(lid) = self.lid() {
+                targets.push(Jid::lid(&lid.user).with_device(jid.device));
+            }
+        }
+        let signal = self.signal();
+        let mut damaged = 0;
+        for target in targets {
+            if signal.scramble_session(&target.signal_address()).await? {
+                damaged += 1;
+            }
+        }
+        self.inner.store.flush().await?;
+        Ok(damaged)
+    }
+
     pub async fn logout(&self) -> Result<()> {
         if let Some(me) = self.me() {
             let node = Node::new("iq")

@@ -1,4 +1,5 @@
-use std::time::Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use prost::Message as _;
 
@@ -25,6 +26,34 @@ pub(crate) struct OutboxEntry {
     pub attempts: u32,
     #[prost(string, optional, tag = "5")]
     pub edit: Option<String>,
+    #[prost(uint64, tag = "6")]
+    pub order: u64,
+}
+
+impl OutboxEntry {
+    // Entries saved before `order` existed only have seconds; they sort as the start of their second.
+    fn sort_key(&self) -> u64 {
+        if self.order > 0 {
+            self.order
+        } else {
+            (self.created_at.max(0) as u64).saturating_mul(1_000_000)
+        }
+    }
+}
+
+// Microseconds since 1970, never the same twice. created_at is in seconds, and three sends in the same second
+// came back from the outbox in whatever order the store listed them.
+fn next_order() -> u64 {
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_micros() as u64);
+    let mut last = LAST.load(Ordering::Relaxed);
+    loop {
+        let next = now.max(last + 1);
+        match LAST.compare_exchange_weak(last, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(actual) => last = actual,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -71,6 +100,7 @@ impl Client {
             created_at: now_secs(),
             attempts: 0,
             edit: edit.map(str::to_owned),
+            order: next_order(),
         };
         if let Err(err) = self.inner.store.set(KeyKind::Outbox, id, entry.encode_to_vec()).await {
             tracing::warn!(%err, id, "could not keep the message in the outbox");
@@ -157,7 +187,7 @@ impl Client {
                 }
             }
         }
-        entries.sort_by_key(|(_, entry)| entry.created_at);
+        entries.sort_by_key(|(_, entry)| entry.sort_key());
         tracing::debug!(pending = entries.len(), "flushing the outbox");
         for (id, mut entry) in entries {
             if self.current_generation() != generation {
