@@ -16,7 +16,7 @@ const https = require('node:https')
 const net = require('node:net')
 const os = require('node:os')
 const path = require('node:path')
-const { fork } = require('node:child_process')
+const { fork, spawn } = require('node:child_process')
 const { FakeWaServer, parsePairingQrString } = require('@zapo-js/fake-server')
 
 const option = (name, fallback) => {
@@ -27,6 +27,10 @@ const RTT = Number(option('rtt', 60))
 const JITTER = Number(option('jitter', 10))
 const RUNS = Number(option('runs', 3))
 const OUT = option('out', null)
+// --via user@host sends the chat socket through the internet instead of the simulated proxy: an SSH tunnel goes to
+// that host and comes straight back (-L there, -R back here), so every byte crosses the real network twice.
+const VIA = option('via', null)
+const KEY = option('key', null)
 const BOT = '5511999999999'
 const BOT_DEVICE = `${BOT}:1@s.whatsapp.net`
 const GROUP = '120363000000000088@g.us'
@@ -91,6 +95,10 @@ function mediaBridge(origin) {
     upstream.on('error', (error) => res.destroy(error))
     req.pipe(upstream)
   })
+  // Node closes idle keep-alive connections after 5 s; the client would then reuse a dead one and pay a retry that
+  // has nothing to do with either library.
+  server.keepAliveTimeout = 120000
+  server.headersTimeout = 125000
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)))
 }
 
@@ -204,7 +212,9 @@ async function round(library, server, proxy, bridge, rootHex) {
     if (!message?.documentMessage) bot.problems.push('the document did not arrive as a document')
     documents.push(now() - at)
   }
-  result.documentMs = { p50: percentile(documents, 50), p95: percentile(documents, 95) }
+  result.documentMs = { p50: percentile(documents, 50), p95: percentile(documents, 95), all: documents.map(Math.round) }
+  const phases = (await bot.stats()).timings
+  if (phases) result.sendPhasesMs = Object.fromEntries(Object.entries(phases).filter(([, v]) => v && v.p95 !== undefined).map(([k, v]) => [k.replace('Micros', ''), [Math.round(v.p50 / 100) / 10, Math.round(v.p95 / 100) / 10, Math.round(v.max / 100) / 10]]))
 
   const burst = 300
   let replies = 0
@@ -249,12 +259,59 @@ function summarize(results) {
   return rows.map(([label, read]) => ({ label, soblendwa: pick('soblendwa', read), zapo: pick('zapo', read) }))
 }
 
+async function waitForPort(port, ms = 20000) {
+  const until = Date.now() + ms
+  while (Date.now() < until) {
+    const open = await new Promise((resolve) => {
+      const socket = net.connect(port, '127.0.0.1', () => {
+        socket.destroy()
+        resolve(true)
+      })
+      socket.on('error', () => resolve(false))
+    })
+    if (open) return
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  throw new Error(`port ${port} never opened`)
+}
+
+async function sshTunnel(target) {
+  const local = 20000 + Math.floor(Math.random() * 20000)
+  const remote = 20000 + Math.floor(Math.random() * 20000)
+  const args = ['-N', '-o', 'BatchMode=yes', '-o', 'ExitOnForwardFailure=yes', ...(KEY ? ['-i', KEY] : [])]
+  args.push('-L', `${local}:127.0.0.1:${remote}`, '-R', `${remote}:127.0.0.1:${target.port}`, VIA)
+  const child = spawn('ssh', args, { stdio: 'ignore' })
+  await waitForPort(local)
+  await new Promise((resolve) => setTimeout(resolve, 1500))
+  return { address: () => ({ port: local }), close: () => child.kill() }
+}
+
+// Time to get the first bytes of an HTTP answer back through the path: one round trip of the network itself.
+async function roundTrip(port, samples = 15) {
+  const times = []
+  for (let i = 0; i < samples; i += 1) {
+    const socket = await new Promise((resolve, reject) => {
+      const s = net.connect(port, '127.0.0.1', () => resolve(s))
+      s.on('error', reject)
+    })
+    socket.setNoDelay(true)
+    const at = now()
+    await new Promise((resolve) => {
+      socket.once('data', resolve)
+      socket.write('GET / HTTP/1.1\r\nHost: x\r\n\r\n')
+    })
+    times.push(now() - at)
+    socket.destroy()
+  }
+  return median(times)
+}
+
 async function fresh() {
   const server = await FakeWaServer.start()
   server.onAuthenticatedPipeline((pipeline) => {
     latest.pipeline = pipeline
   })
-  const proxy = await latencyProxy(new URL(server.url))
+  const proxy = VIA ? await sshTunnel(new URL(server.url)) : await latencyProxy(new URL(server.url))
   const bridge = await mediaBridge(server.mediaUrl('/').replace(/\/$/, ''))
   const rootHex = Buffer.from(server.noiseRootCa.publicKey).toString('hex')
   return {
@@ -270,12 +327,15 @@ async function fresh() {
   }
 }
 
+const networkRtts = []
+
 async function main() {
   const results = []
   for (let run = 0; run < RUNS; run += 1) {
     for (const library of run % 2 ? ['zapo', 'soblendwa'] : ['soblendwa', 'zapo']) {
       // a fresh fake server per round: it keeps the pre-keys of the last bot it saw
       const world = await fresh()
+      if (VIA) networkRtts.push(await roundTrip(world.proxy.address().port))
       const result = await round(library, world.server, world.proxy, world.bridge, world.rootHex)
       await world.close()
       console.error(`${library} ${run + 1}/${RUNS}: ${JSON.stringify(result)}`)
@@ -283,10 +343,11 @@ async function main() {
     }
   }
   const table = summarize(results)
-  const report = { rttMs: RTT, jitterMs: JITTER, runs: RUNS, node: process.version, platform: `${os.platform()} ${os.arch()}`, cpus: os.cpus()[0]?.model, table, results }
+  const network = VIA ? `internet, túnel ida y vuelta a ${VIA.split('@').pop()}, ~${median(networkRtts)} ms medidos` : `simulada, ${RTT} ms ± ${JITTER}`
+  const report = { network, rttMs: VIA ? median(networkRtts) : RTT, jitterMs: VIA ? null : JITTER, runs: RUNS, node: process.version, platform: `${os.platform()} ${os.arch()}`, cpus: os.cpus()[0]?.model, table, results }
   if (OUT) fs.writeFileSync(OUT, JSON.stringify(report, null, 2))
   console.log(`
-Red simulada: ${RTT} ms de ida y vuelta ± ${JITTER} ms · ${RUNS} corridas alternadas, mediana`)
+Red ${network} · ${RUNS} corridas alternadas, mediana`)
   for (const row of table) console.log(`${row.label.padEnd(48)} SoblendWA ${String(row.soblendwa).padStart(8)} · zapo ${String(row.zapo).padStart(8)}`)
   process.exit(0)
 }

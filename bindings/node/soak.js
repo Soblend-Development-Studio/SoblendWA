@@ -20,7 +20,15 @@ const HELP = `Pruebas con tu propio número (escríbelas aquí):
 !yowner cita · te responde citándote y mencionándote
 !yowner lid · tu número y tu LID, y la consulta en los dos sentidos
 !yowner foto · reenvía la última foto que mandaste en este chat (la segunda vez no se vuelve a subir)
+!yowner media · manda siempre la misma imagen: tras !yowner reiniciar no se debe volver a subir
+!yowner reiniciar · reinicia el proceso (vuelve solo en unos 20 s)
+!yowner mac · daña la sesión del bot con tu teléfono; tu próximo mensaje debe volver por el reintento
+!yowner cola · te manda 3 mensajes y corta la conexión antes de que WhatsApp confirme; deben llegarte una vez cada uno
 Además cuenta solo: crea un grupo, sal de uno o entra por enlace y aparece en el resumen.`
+const TILE = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAIAAABt+uBvAAAAtUlEQVR42u3ZMQ0AIAxFwUpgYEAF/iUgCwll6QBcwtyE215+rDbT1/tI36t3AhAgQIAAAQIECBAgQIAKgH7+/MkdQIAAAQIECBAgQIAAAaoAEqtqHhAgQIAAAQIECBAgQHYxNQ8IECBAgAABAgQIECC7mFgFBAgQIECAAAECBAgQILuYmgcECBAgQIAAAQIECJBdTM0DAgQIECBAgAABAgQIkF1MzQMCBAgQIECAAAECBOgSoA0EeO1LOBqdLwAAAABJRU5ErkJggg==',
+  'base64',
+)
 
 const args = process.argv.slice(2)
 const pairAt = args.indexOf('--pair')
@@ -199,6 +207,39 @@ async function answer(bot, message, command, lastImage) {
       await bot.sendImage(chat, data, { caption: `La misma foto, ${data.length} bytes` })
       const stats = bot.stats()
       text = `Subidas: ${stats.mediaUploaded} · reutilizadas sin volver a subir: ${stats.mediaReused}`
+      break
+    }
+    case 'media': {
+      const before = bot.stats()
+      await bot.sendImage(chat, TILE, { caption: 'Siempre la misma imagen' })
+      const after = bot.stats()
+      const reused = after.mediaReused > before.mediaReused
+      write('mediaCheck', { reused })
+      text = reused
+        ? 'No se volvió a subir: salió de la multimedia guardada.'
+        : 'Se subió. Haz !yowner reiniciar y luego !yowner media: la segunda vez no se debe subir.'
+      break
+    }
+    case 'reiniciar':
+      await bot.sendText(chat, 'Reinicio el proceso; vuelvo en unos 20 s.', { preview: false })
+      write('restartRequested')
+      setTimeout(() => process.exit(75), 500)
+      return
+    case 'mac': {
+      const phone = `${bot.me.split(':')[0].split('@')[0]}@s.whatsapp.net`
+      await bot.sendText(chat, 'Dañando la sesión con tu teléfono. Ahora manda un mensaje cualquiera desde el teléfono, a quien sea, y luego !yowner: debe salir bad_mac recuperado.', { preview: false })
+      const damaged = await bot.call('damageSessions', { jid: phone })
+      write('macTest', { damaged })
+      return
+    }
+    case 'cola': {
+      const resent = bot.stats().outboxResent
+      for (let i = 1; i <= 3; i += 1) await bot.sendText(chat, `cola ${i}/3`, { preview: false })
+      await bot.call('simulateOutage')
+      write('outageTest')
+      await bot.waitFor('connected', null, 60000)
+      await new Promise((resolve) => setTimeout(resolve, 3000))
+      text = `Volví. Reenviados por la cola: ${bot.stats().outboxResent - resent}. Deberías ver "cola 1/3", "cola 2/3" y "cola 3/3" una sola vez cada uno y en orden.`
       break
     }
     default:

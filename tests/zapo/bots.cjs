@@ -16,8 +16,9 @@ function report() {
   const cpu = process.cpuUsage()
   return { cpuMs: Math.round((cpu.user + cpu.system) / 1000), rssMb: +(process.memoryUsage().rss / 1048576).toFixed(1) }
 }
+let timings = () => null
 process.on('message', (message) => {
-  if (message === 'stats') process.send({ stats: report() })
+  if (message === 'stats') process.send({ stats: { ...report(), timings: timings() } })
 })
 
 const document = () => crypto.randomBytes(64 * 1024)
@@ -67,6 +68,7 @@ async function soblendwa() {
     server: { wsUrl: url, noiseRootHex: rootHex, mediaEndpoint: mediaOrigin },
     sendLimit: false,
   })
+  timings = () => bot.stats().sendTimings
   bot.on('qr', ({ code }) => console.log(`QR ${code}`))
   bot.on('connected', () => console.log('READY'))
   bot.on('disconnected', (event) => console.log(`DISCONNECTED ${JSON.stringify(event.reason)}`))
