@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use qrcode::render::unicode::Dense1x2;
@@ -11,17 +11,28 @@ use serde_json::{json, Value};
 use soblendwa::{Client, Event, FileStore, Jid, Message, MessageEvent};
 use tracing_subscriber::EnvFilter;
 
-const COMMAND: &str = "!yowner";
 const SNAPSHOT_EVERY: Duration = Duration::from_secs(10 * 60);
+static COMMAND: OnceLock<String> = OnceLock::new();
 
-const USAGE: &str = "Uso: soak [carpeta de la sesión] [--pair 5215512345678]
+fn command() -> &'static str {
+    COMMAND.get().map_or("!yowner", String::as_str)
+}
+
+const USAGE: &str = "Uso: soak [carpeta de la sesión] [--pair 5215512345678] [--comando !yrust] [--compartida carpeta]
+            [--testigo-de 5215511111111]
        soak [carpeta de la sesión] --resumen
 
 Se queda conectado días o semanas y anota en <carpeta>/soak.jsonl cuántos mensajes llegan, cuántos no se pudieron
 descifrar, las reconexiones y la memoria. No guarda textos ni números.
 
 Solo responde cuando tú escribes !yowner desde tu teléfono en un chat privado (mejor en el chat contigo mismo).
-!yowner ayuda muestra las pruebas que puedes hacer con un solo número.";
+!yowner ayuda muestra las pruebas que puedes hacer con un solo número.
+
+Con --comando otra palabra puede correr como segundo dispositivo del mismo número junto a soak.js sin que los dos
+contesten lo mismo. Así es el testigo de las pruebas de soak.js: anota los mensajes de `!yowner caida` que le
+llegan, y con --compartida manda desde el store de multimedia compartido (<carpeta>/media.db) la imagen de
+`!yowner compartida` (necesita la feature sqlite). Si es otro número, --testigo-de dice de qué número aceptar esas
+pruebas; sin él solo cuentan las que manda tu propio número desde otro dispositivo.";
 
 const HELP: &str = "Pruebas con tu propio número (escríbelas aquí):
 !yowner · resumen de la prueba larga
@@ -63,17 +74,79 @@ fn is_private(chat: &Jid) -> bool {
     chat.is_pn() || chat.is_lid()
 }
 
-fn owner_command(message: &MessageEvent) -> Option<String> {
+fn owner_command(message: &MessageEvent, command: &str) -> Option<String> {
     let info = &message.info;
     if !info.from_me || !is_private(&info.chat) || info.is_older_than(Duration::from_secs(120)) {
         return None;
     }
     let mut words = message.text()?.split_whitespace();
-    if !words.next()?.eq_ignore_ascii_case(COMMAND) {
+    if !words.next()?.eq_ignore_ascii_case(command) {
         return None;
     }
     let rest: Vec<&str> = words.collect();
     (rest.len() <= 1).then(|| rest.first().map(|word| word.to_lowercase()).unwrap_or_default())
+}
+
+// What soak.js sends to the owner's chat in `!yowner caida`: "caída 3/5 #a1b2c3". The test counts it from here.
+fn kill_probe(text: &str) -> Option<(&str, u64, u64)> {
+    let mut words = text.split_whitespace();
+    if words.next()? != "caída" {
+        return None;
+    }
+    let (i, total) = words.next()?.split_once('/')?;
+    let tag = words.next()?.strip_prefix('#')?;
+    if words.next().is_some() || !tag.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some((tag, i.parse().ok()?, total.parse().ok()?))
+}
+
+// What soak.js sends in `!yowner mac 10` after damaging its side of the session with us: "mac? 3/10 #a1b2c3".
+// The answer goes back through that damaged session, which is the point.
+fn mac_probe(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix("mac? ")?;
+    let (_, tag) = rest.split_once(" #")?;
+    (!tag.is_empty() && tag.chars().all(|c| c.is_ascii_hexdigit())).then_some(rest)
+}
+
+// The image soak.js sends again after its kill -9 in `!yowner compartida`: "compartida 2/5 #a1b2c3 otra vez".
+fn shared_probe(text: &str) -> Option<&str> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let ["compartida", _, tag, "otra", "vez"] = words.as_slice() else { return None };
+    tag.strip_prefix('#').filter(|tag| !tag.is_empty() && tag.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+// Whose probes count: another device of this same number, or with --testigo-de, that other account.
+fn probe_source(info: &soblendwa::MessageInfo, from: Option<&str>) -> bool {
+    if !is_private(&info.chat) {
+        return false;
+    }
+    match from {
+        None => info.from_me,
+        Some(number) => {
+            !info.from_me
+                && [Some(&info.sender), info.sender_alt.as_ref(), info.sender_phone.as_ref()]
+                    .into_iter()
+                    .flatten()
+                    .any(|jid| jid.user == number)
+        }
+    }
+}
+
+async fn send_shared(client: Client, report: Arc<Report>, dir: PathBuf, tag: String, chat: Jid) {
+    let sent = async {
+        let data = tokio::fs::read(dir.join(format!("{tag}.png"))).await?;
+        let before = client.stats().media_reused;
+        client.send_image(&chat, &data, Some(&format!("compartida #{tag} desde el otro dispositivo"))).await?;
+        Ok::<_, soblendwa::Error>(client.stats().media_reused > before)
+    };
+    match sent.await {
+        Ok(reused) => report.write("sharedCheck", json!({ "tag": tag, "reused": reused })),
+        Err(err) => {
+            eprintln!("no pude mandar la imagen compartida: {err}");
+            report.write("sharedCheck", json!({ "tag": tag, "error": err.code() }));
+        }
+    }
 }
 
 struct Report {
@@ -242,7 +315,7 @@ fn summary(client: &Client, report: &Report) -> String {
 fn phases(client: &Client) -> String {
     let timings = client.stats().send_timings;
     if timings.samples == 0 {
-        return "Todavía no hay envíos medidos. Prueba con !yowner ping y vuelve a pedirlo.".to_owned();
+        return format!("Todavía no hay envíos medidos. Prueba con {} ping y vuelve a pedirlo.", command());
     }
     let row = |name: &str, spread: Option<&soblendwa::Spread>| match spread {
         Some(s) => format!(
@@ -275,7 +348,7 @@ async fn answer(
     let chat = &message.info.chat;
     let text = match command {
         "" => summary(client, report),
-        "ayuda" => HELP.to_owned(),
+        "ayuda" => HELP.replace("!yowner", self::command()),
         "ping" => format!(
             "Pong · {:.2} ms dentro del bot · red {} ms",
             message.info.elapsed().as_secs_f64() * 1e3,
@@ -311,7 +384,9 @@ async fn answer(
         }
         "foto" => {
             let Some(image) = last_image else {
-                client.send_text(chat, "Manda una foto en este chat y luego !yowner foto.").await?;
+                client
+                    .send_text(chat, format!("Manda una foto en este chat y luego {} foto.", self::command()))
+                    .await?;
                 return Ok(());
             };
             let data = client.download_message(&image.message).await?;
@@ -319,7 +394,7 @@ async fn answer(
             let stats = client.stats();
             format!("Subidas: {} · reutilizadas sin volver a subir: {}", stats.media_uploaded, stats.media_reused)
         }
-        other => format!("No conozco \"{other}\". Escribe !yowner ayuda."),
+        other => format!("No conozco \"{other}\". Escribe {} ayuda.", self::command()),
     };
     println!("{text}");
     client.send_text(chat, text).await?;
@@ -362,11 +437,16 @@ async fn main() -> soblendwa::Result<()> {
         println!("{USAGE}");
         return Ok(());
     }
-    let mut pair = args.iter().position(|arg| arg == "--pair").and_then(|at| args.get(at + 1)).cloned();
+    let option = |name: &str| args.iter().position(|arg| arg == name).and_then(|at| args.get(at + 1)).cloned();
+    let mut pair = option("--pair");
+    let shared = option("--compartida").map(PathBuf::from);
+    let witness_of = option("--testigo-de");
+    let _ = COMMAND.set(option("--comando").unwrap_or_else(|| "!yowner".to_owned()));
+    let with_value = ["--pair", "--comando", "--compartida", "--testigo-de"];
     let folder = args
         .iter()
         .enumerate()
-        .find(|(at, arg)| !arg.starts_with("--") && (*at == 0 || args[at - 1] != "--pair"))
+        .find(|(at, arg)| !arg.starts_with("--") && (*at == 0 || !with_value.contains(&args[at - 1].as_str())))
         .map_or_else(|| "sesion-soak".to_owned(), |(_, arg)| arg.clone());
     if args.iter().any(|arg| arg == "--resumen") {
         let report = Report { path: PathBuf::from(&folder).join("soak.jsonl"), run: 0 };
@@ -376,8 +456,21 @@ async fn main() -> soblendwa::Result<()> {
 
     let store = FileStore::open(&folder).await?;
     let report = Arc::new(Report { path: PathBuf::from(&folder).join("soak.jsonl"), run: now_millis() });
-    let (client, mut events) =
-        Client::builder().store(store).online_on_connect(false).device_name("SoblendWA").build().await?;
+    let mut builder = Client::builder().store(store).online_on_connect(false).device_name("SoblendWA");
+    if let Some(dir) = &shared {
+        tokio::fs::create_dir_all(dir).await?;
+        #[cfg(feature = "sqlite")]
+        {
+            let media = soblendwa::store::SqliteStore::open(dir.join("media.db")).await?;
+            builder = builder.media_store(Arc::new(media));
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            eprintln!("--compartida necesita la feature sqlite: cargo run --example soak --features sqlite");
+            std::process::exit(2);
+        }
+    }
+    let (client, mut events) = builder.build().await?;
     report.write("start", json!({ "version": soblendwa::VERSION }));
     println!("{} · sesión en {folder} · reporte en {}", soblendwa::credits(), report.path.display());
     client.connect().await?;
@@ -429,12 +522,15 @@ async fn main() -> soblendwa::Result<()> {
             },
             Event::Connected => {
                 println!(
-                    "Conectado como {}. Escribe {COMMAND} en tu chat contigo mismo.",
-                    client.me().map(|j| j.to_string()).unwrap_or_default()
+                    "Conectado como {}. Escribe {} en tu chat contigo mismo.",
+                    client.me().map(|j| j.to_string()).unwrap_or_default(),
+                    command()
                 );
                 report.write("connected", json!({}));
             }
             Event::Disconnected { reason, reconnecting } => {
+                // a pairing code only lives as long as the connection that asked for it
+                asked_code = false;
                 report.write("disconnected", json!({ "reason": format!("{reason:?}"), "reconnecting": reconnecting }));
             }
             Event::LoggedOut { cause, code, .. } => {
@@ -479,12 +575,32 @@ async fn main() -> soblendwa::Result<()> {
                 {
                     last_image.insert(message.info.chat.clone(), message.clone());
                 }
-                let Some(command) = owner_command(&message) else { continue };
+                if probe_source(&message.info, witness_of.as_deref()) {
+                    if let Some((tag, i, total)) = message.text().and_then(kill_probe) {
+                        report.write("observed", json!({ "tag": tag, "i": i, "total": total, "id": message.info.id }));
+                    }
+                    if let Some(round) = message.text().and_then(mac_probe) {
+                        let (client, chat, answer) =
+                            (client.clone(), message.info.chat.clone(), format!("mac {round}"));
+                        report.write("macProbe", json!({}));
+                        tokio::spawn(async move {
+                            if let Err(err) = client.send_text(&chat, answer).await {
+                                eprintln!("no pude contestar la prueba de mac: {err}");
+                            }
+                        });
+                    }
+                    let probe = message.text().and_then(shared_probe).map(str::to_owned);
+                    if let (Some(dir), Some(tag)) = (&shared, probe) {
+                        let chat = message.info.chat.clone();
+                        tokio::spawn(send_shared(client.clone(), report.clone(), dir.clone(), tag, chat));
+                    }
+                }
+                let Some(command) = owner_command(&message, command()) else { continue };
                 let image = last_image.get(&message.info.chat).cloned();
                 let (client, report) = (client.clone(), report.clone());
                 tokio::spawn(async move {
                     if let Err(err) = answer(&client, &report, &message, &command, image.as_ref()).await {
-                        eprintln!("no pude responder {COMMAND} {command}: {err}");
+                        eprintln!("no pude responder {} {command}: {err}", self::command());
                         report.write("replyFailed", json!({ "error": err.code() }));
                         let _ = client.send_text(&message.info.chat, format!("error {}: {err}", err.code())).await;
                     }
@@ -528,13 +644,44 @@ mod tests {
 
     #[test]
     fn owner_only() {
-        let command = |chat: Jid, from_me: bool, text: &str| owner_command(&message(chat, from_me, text));
+        let command = |chat: Jid, from_me: bool, text: &str| owner_command(&message(chat, from_me, text), "!yowner");
         assert_eq!(command(Jid::phone("5215511111111"), true, " !yowner "), Some(String::new()));
         assert_eq!(command(Jid::lid("174342050709710"), true, "!YOWNER Ping"), Some("ping".into()));
         assert_eq!(command(Jid::phone("5215511111111"), false, "!yowner"), None);
         assert_eq!(command(Jid::group("120363000000000001"), true, "!yowner"), None);
         assert_eq!(command(Jid::phone("5215511111111"), true, "!yowner por favor ya"), None);
         assert_eq!(command(Jid::phone("5215511111111"), true, "hola !yowner"), None);
+        let rust = owner_command(&message(Jid::phone("5215511111111"), true, "!yrust ping"), "!yrust");
+        assert_eq!(rust, Some("ping".into()));
+    }
+
+    #[test]
+    fn probes_only_from_the_tested_account() {
+        let other = message(Jid::phone("5215522222222"), false, "caída 1/5 #a1b2c3");
+        assert!(probe_source(&other.info, Some("5215522222222")));
+        assert!(!probe_source(&other.info, Some("5215533333333")));
+        assert!(!probe_source(&other.info, None), "without --testigo-de only our own other device counts");
+        let own = message(Jid::phone("5215511111111"), true, "caída 1/5 #a1b2c3");
+        assert!(probe_source(&own.info, None));
+        assert!(!probe_source(&own.info, Some("5215522222222")));
+        assert!(!probe_source(&message(Jid::group("120363000000000001"), false, "x").info, Some("120363000000000001")));
+    }
+
+    #[test]
+    fn mac_probe_answers() {
+        assert_eq!(mac_probe("mac? 3/10 #a1b2c3"), Some("3/10 #a1b2c3"));
+        assert_eq!(mac_probe("mac 3/10 #a1b2c3"), None);
+        assert_eq!(mac_probe("mac? 3/10 #zz"), None);
+    }
+
+    #[test]
+    fn probes_from_the_other_device() {
+        assert_eq!(kill_probe("caída 3/5 #a1b2c3"), Some(("a1b2c3", 3, 5)));
+        assert_eq!(kill_probe("caída 3/5 #../etc"), None);
+        assert_eq!(kill_probe("caída 3/5 #a1b2c3 hola"), None);
+        assert_eq!(shared_probe("compartida 2/5 #0f0f0f otra vez"), Some("0f0f0f"));
+        assert_eq!(shared_probe("compartida 2/5 #0f0f0f"), None);
+        assert_eq!(shared_probe("compartida 2/5 #../x otra vez"), None);
     }
 
     #[test]

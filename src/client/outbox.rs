@@ -104,6 +104,12 @@ impl Client {
         };
         if let Err(err) = self.inner.store.set(KeyKind::Outbox, id, entry.encode_to_vec()).await {
             tracing::warn!(%err, id, "could not keep the message in the outbox");
+            return;
+        }
+        // Every store writes a little later, and the id goes back before WhatsApp confirms. Without this a kill -9
+        // in that gap loses a message the caller was told is on its way, and the Signal state its encryption moved.
+        if let Err(err) = self.inner.store.flush().await {
+            tracing::warn!(%err, id, "could not write the outbox entry before sending");
         }
     }
 

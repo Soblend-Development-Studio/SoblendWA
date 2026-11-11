@@ -1614,6 +1614,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accepted_send_is_on_disk() {
+        let fake = FakeWhatsApp::start().await.unwrap();
+        let dir = std::env::temp_dir().join(format!("soblendwa-outbox-{}", crypto::random_u32()));
+        let store = crate::FileStore::open(&dir).await.unwrap();
+        store.save_creds(&fake.account(BOT)).await.unwrap();
+        let (bot, _bot_events) = fake.connect_with(fake.builder().store(store)).await.unwrap();
+        let (_ana, _ana_events) = fake.connect(ANA).await.unwrap();
+
+        fake.hold_acks(BOT, true);
+        let id = bot.send_text(&Jid::phone(ANA), "antes del kill -9").await.unwrap();
+        let disk = crate::FileStore::open(&dir).await.unwrap();
+        let parked = disk.keys(KeyKind::Outbox).await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(parked.contains(&id), "send_text returned, so a kill -9 now must not lose it");
+    }
+
+    #[tokio::test]
     async fn outage_resends_once() {
         let fake = FakeWhatsApp::start().await.unwrap();
         let (bot, mut bot_events) = fake.connect(BOT).await.unwrap();
@@ -1932,8 +1949,10 @@ mod tests {
         println!("6 uploads of {delay:?} each to one chat: {elapsed:?}");
         let one_by_one = delay * files.len() as u32;
         assert!(elapsed < one_by_one, "one upload after another takes at least {one_by_one:?}, this took {elapsed:?}");
+        // total includes the server ack, which lands after send returns; counting the lane wait twice would add
+        // several uploads, so one upload of slack still catches that
         let timings = bot.stats().send_timings;
-        assert!(timings.total.max < elapsed + Duration::from_millis(50), "{timings:?} vs {elapsed:?}");
+        assert!(timings.total.max < elapsed + delay, "{timings:?} vs {elapsed:?}");
     }
 
     #[tokio::test]

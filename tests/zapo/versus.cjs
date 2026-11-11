@@ -28,7 +28,8 @@ const JITTER = Number(option('jitter', 10))
 const RUNS = Number(option('runs', 3))
 const OUT = option('out', null)
 // --via user@host sends the chat socket through the internet instead of the simulated proxy: an SSH tunnel goes to
-// that host and comes straight back (-L there, -R back here), so every byte crosses the real network twice.
+// that host and comes straight back (-L there, -R back here), so every byte crosses the real network twice and each
+// direction between bot and server costs one full ping to that host.
 const VIA = option('via', null)
 const KEY = option('key', null)
 const BOT = '5511999999999'
@@ -256,7 +257,16 @@ function summarize(results) {
     ['Memoria al terminar (MB)', (r) => r.rssAfterMb],
     ['Arrancar desde la base (ms)', (r) => r.restartFromDatabaseMs],
   ]
-  return rows.map(([label, read]) => ({ label, soblendwa: pick('soblendwa', read), zapo: pick('zapo', read) }))
+  const range = (library, read) => {
+    const values = results.filter((r) => r.library === library).map(read)
+    return [Math.min(...values), Math.max(...values)]
+  }
+  return rows.map(([label, read]) => ({
+    label,
+    soblendwa: pick('soblendwa', read),
+    zapo: pick('zapo', read),
+    range: { soblendwa: range('soblendwa', read), zapo: range('zapo', read) },
+  }))
 }
 
 async function waitForPort(port, ms = 20000) {
@@ -275,34 +285,50 @@ async function waitForPort(port, ms = 20000) {
   throw new Error(`port ${port} never opened`)
 }
 
+const randomPort = () => 20000 + Math.floor(Math.random() * 20000)
+
+// The same SSH connection also carries an echo server, so the network is timed on exactly the path the bots use.
 async function sshTunnel(target) {
-  const local = 20000 + Math.floor(Math.random() * 20000)
-  const remote = 20000 + Math.floor(Math.random() * 20000)
+  const echo = net.createServer((socket) => socket.pipe(socket)).listen(0, '127.0.0.1')
+  await new Promise((resolve) => echo.once('listening', resolve))
+  const [local, remote, echoLocal, echoRemote] = [randomPort(), randomPort(), randomPort(), randomPort()]
   const args = ['-N', '-o', 'BatchMode=yes', '-o', 'ExitOnForwardFailure=yes', ...(KEY ? ['-i', KEY] : [])]
-  args.push('-L', `${local}:127.0.0.1:${remote}`, '-R', `${remote}:127.0.0.1:${target.port}`, VIA)
+  args.push('-L', `${local}:127.0.0.1:${remote}`, '-R', `${remote}:127.0.0.1:${target.port}`)
+  args.push('-L', `${echoLocal}:127.0.0.1:${echoRemote}`, '-R', `${echoRemote}:127.0.0.1:${echo.address().port}`, VIA)
   const child = spawn('ssh', args, { stdio: 'ignore' })
   await waitForPort(local)
   await new Promise((resolve) => setTimeout(resolve, 1500))
-  return { address: () => ({ port: local }), close: () => child.kill() }
+  return {
+    address: () => ({ port: local }),
+    echoPort: echoLocal,
+    close: () => {
+      child.kill()
+      echo.close()
+    },
+  }
 }
 
-// Time to get the first bytes of an HTTP answer back through the path: one round trip of the network itself.
+// Bot -> server -> bot on a connection that is already open. A new connection would also time opening the SSH
+// channel at both ends, which the bots pay once when they connect: that is how an earlier version got 650 ms.
 async function roundTrip(port, samples = 15) {
+  const socket = await new Promise((resolve, reject) => {
+    const s = net.connect(port, '127.0.0.1', () => resolve(s))
+    s.on('error', reject)
+  })
+  socket.setNoDelay(true)
+  const echo = () =>
+    new Promise((resolve) => {
+      socket.once('data', resolve)
+      socket.write('x')
+    })
+  await echo()
   const times = []
   for (let i = 0; i < samples; i += 1) {
-    const socket = await new Promise((resolve, reject) => {
-      const s = net.connect(port, '127.0.0.1', () => resolve(s))
-      s.on('error', reject)
-    })
-    socket.setNoDelay(true)
     const at = now()
-    await new Promise((resolve) => {
-      socket.once('data', resolve)
-      socket.write('GET / HTTP/1.1\r\nHost: x\r\n\r\n')
-    })
+    await echo()
     times.push(now() - at)
-    socket.destroy()
   }
+  socket.destroy()
   return median(times)
 }
 
@@ -335,7 +361,7 @@ async function main() {
     for (const library of run % 2 ? ['zapo', 'soblendwa'] : ['soblendwa', 'zapo']) {
       // a fresh fake server per round: it keeps the pre-keys of the last bot it saw
       const world = await fresh()
-      if (VIA) networkRtts.push(await roundTrip(world.proxy.address().port))
+      if (VIA) networkRtts.push(await roundTrip(world.proxy.echoPort))
       const result = await round(library, world.server, world.proxy, world.bridge, world.rootHex)
       await world.close()
       console.error(`${library} ${run + 1}/${RUNS}: ${JSON.stringify(result)}`)
@@ -343,12 +369,30 @@ async function main() {
     }
   }
   const table = summarize(results)
-  const network = VIA ? `internet, túnel ida y vuelta a ${VIA.split('@').pop()}, ~${median(networkRtts)} ms medidos` : `simulada, ${RTT} ms ± ${JITTER}`
-  const report = { network, rttMs: VIA ? median(networkRtts) : RTT, jitterMs: VIA ? null : JITTER, runs: RUNS, node: process.version, platform: `${os.platform()} ${os.arch()}`, cpus: os.cpus()[0]?.model, table, results }
+  const network = VIA
+    ? `internet, túnel PC → ${VIA.split('@').pop()} → PC, ${median(networkRtts)} ms de ida y vuelta entre bot y servidor`
+    : `simulada, ${RTT} ms ± ${JITTER}`
+  const report = {
+    measuredAt: new Date().toISOString(),
+    network,
+    rttMs: VIA ? median(networkRtts) : RTT,
+    networkRttsMs: VIA ? networkRtts : undefined,
+    jitterMs: VIA ? null : JITTER,
+    runs: RUNS,
+    node: process.version,
+    platform: `${os.platform()} ${os.arch()}`,
+    cpus: os.cpus()[0]?.model,
+    table,
+    results,
+  }
   if (OUT) fs.writeFileSync(OUT, JSON.stringify(report, null, 2))
   console.log(`
 Red ${network} · ${RUNS} corridas alternadas, mediana`)
-  for (const row of table) console.log(`${row.label.padEnd(48)} SoblendWA ${String(row.soblendwa).padStart(8)} · zapo ${String(row.zapo).padStart(8)}`)
+  const spread = ([low, high]) => `(${low}–${high})`.padEnd(16)
+  for (const row of table) {
+    const ours = `${String(row.soblendwa).padStart(8)} ${spread(row.range.soblendwa)}`
+    console.log(`${row.label.padEnd(48)} SoblendWA ${ours} · zapo ${String(row.zapo).padStart(8)} ${spread(row.range.zapo)}`)
+  }
   process.exit(0)
 }
 

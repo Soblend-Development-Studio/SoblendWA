@@ -3,12 +3,13 @@
 // Dry run of a zapo → SoblendWA migration over a real MongoDB, every session in it, without connecting anything.
 // Point it at a copy of your database, never at the one your bot is using:
 //
-//   mongodump --db zapo --nsInclude 'zapo.wa_*' --archive | mongorestore --archive --nsFrom 'zapo.*' --nsTo 'zapo_copia.*'
+//   mongodump --db zapo --archive | mongorestore --archive --nsInclude 'zapo.wa_*' --nsFrom 'zapo.*' --nsTo 'zapo_copia.*'
 //   node tests/zapo/dry-run.cjs mongodb://127.0.0.1:27017 zapo_copia
 //
 // For each collection prefix (zapo's collectionPrefix, one per sub-bot) and each session in it: the read-only check,
-// a full import into a throwaway SQLite file, and whether the imported account is already linked, which is what
-// lets it log in without a QR. Prints counts and timings only, no phone numbers.
+// a full import into a throwaway SQLite file, and whether the imported store opens as a linked account. That last
+// one does not connect: it only says the account and its credentials made it across. Prints counts and timings
+// only, no phone numbers.
 
 const fs = require('node:fs')
 const os = require('node:os')
@@ -78,7 +79,7 @@ async function main() {
   const p = (values, q) => values[Math.min(values.length - 1, Math.floor(values.length * q))] ?? 0
   console.log('\nResumen')
   console.log(`  sesiones de zapo: ${rows.length} · importadas sin error: ${ok.length} · con error: ${rows.length - ok.length}`)
-  console.log(`  ya vinculadas tras importar (entrarían sin QR): ${ok.filter((r) => r.linked).length}`)
+  console.log(`  pasaron la comprobación de vinculación (sin conectar): ${ok.filter((r) => r.linked).length}`)
   console.log(`  sesiones Signal ${sum('sessions')} · sender keys ${sum('senderKeys')} · pre-keys ${sum('preKeys')} · pares LID ${sum('lid')}`)
   console.log(`  elementos que no se pudieron convertir: ${sum('failed')}`)
   console.log(`  simulacro por cuenta p50/máx: ${p(sorted('checkMs'), 0.5)}/${p(sorted('checkMs'), 1)} ms`)
