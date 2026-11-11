@@ -19,6 +19,7 @@
     "README.md",
     "store-check.js",
     "live-check.js",
+    "soak.js",
     "soblendwa.win32-x64-msvc.node",
     "soblendwa.linux-x64-gnu.node",
     "soblendwa.linux-arm64-gnu.node",
