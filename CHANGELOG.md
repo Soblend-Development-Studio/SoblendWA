@@ -4,7 +4,7 @@ Usamos [semver](https://semver.org/lang/es/). En 0.x, el número del medio puede
 arregla. Para no llevarte sorpresas fija la versión exacta que instalas, sin `^`: `"soblendwa-node": "X.Y.Z"`,
 `soblendwa = "=X.Y.Z"`, `soblendwa==X.Y.Z`. Una versión dice "sin publicar" hasta que sale; entonces lleva su fecha.
 
-## 0.2.0 (sin publicar)
+## 0.2.0 (2026-11-11)
 
 ### Rompe
 
