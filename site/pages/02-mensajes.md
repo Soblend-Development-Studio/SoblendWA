@@ -383,6 +383,8 @@ SoblendWA descarta por id los duplicados que llegan, y los cuenta en `stats().du
 
 Si un mensaje no se puede descifrar llega `Event::UndecryptableMessage { info, error }`, y SoblendWA pide un reintento al remitente y una copia a tu teléfono. Si después llega bien, recibes `Event::Message` normal y `Event::MessageRecovered { id, chat, sender }`.
 
+El evento sale una vez por mensaje: si el reenvío tampoco se puede descifrar, no se repite ni se vuelve a contar. Cuando lo que falló es la sesión con ese dispositivo (un `bad message mac`, por ejemplo), el primer reintento ya lleva las llaves para que el remitente arme una sesión nueva; sin ellas, el teléfono reenvía por la misma sesión y vuelve a fallar.
+
 Si pasado el plazo sigue sin llegar, recibes `Event::MessageLost { id, chat, sender, error, waited }`, y se cuenta en `stats().lost`. Así sabes cuántos mensajes tu bot nunca leyó, en lugar de suponerlo. Si llega más tarde, igual recibes `MessageRecovered` y `lost` baja.
 
 | Métrica | Qué cuenta |

@@ -96,6 +96,11 @@ Medido en la misma máquina antes y después (`pipeline` y `throughput` en las p
 - Un mensaje que esperaba su reintento se olvidaba al reiniciar: no llegaba ni `messageLost` ni `messageRecovered`, y
   `stats().lost` se quedaba corto. Ahora la espera se guarda en el store (`awaiting-retry`).
 - Python: si salías de `events()` a la mitad de un lote, el resto del lote se perdía.
+- Con la sesión dañada (`bad message mac`), un mensaje necesitaba dos reintentos: el primero no llevaba llaves y el
+  teléfono reenviaba por la misma sesión. Ahora las lleva desde el primero cuando falló un `msg` o `pkmsg`, y
+  `undecryptableMessage` sale una sola vez por mensaje aunque el reenvío también falle. Visto con `!yowner mac`.
+- `!yowner reiniciar` en `soak.js` salía sin guardar los contadores, y el resumen perdía lo que pasó desde la última
+  foto.
 - Las reacciones a tus estados llegan como `<status type="reaction">` y no se confirmaban: WhatsApp cortaba la conexión
   50 minutos después y la volvía a mandar en cada reconexión, para siempre. Lo encontró la prueba larga con un número
   real (17 reconexiones forzadas en 19 horas) una vez que el motivo de la desconexión empezó a traer el nodo completo.

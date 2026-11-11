@@ -293,6 +293,12 @@ La versión de Node.js trae además comandos para provocar, con tu propio númer
 
 `!yowner mac` no toca tu teléfono ni tus chats con otros: solo el estado del bot. Usan `simulate_outage` y `damage_sessions`, que existen con la feature `testing` para esto mismo. El aviso de cuenta bloqueada no tiene comando: provocarlo de verdad es arriesgar la cuenta.
 
+Con la cuenta de la prueba larga, el 11 de noviembre de 2026:
+
+- `cola`: después del corte, los 3 mensajes salieron por la cola.
+- `media` y `reiniciar`: después de reiniciar el proceso, la imagen salió de la multimedia guardada, dos veces seguidas.
+- `mac`: el mensaje se recuperó en 1,5 s, pero con dos reintentos. El primero no llevaba llaves y el teléfono reenvió por la misma sesión dañada, así que falló otra vez. Desde entonces el primer reintento ya las lleva cuando lo que falló es la sesión.
+
 El reporte va en `<carpeta>/soak.jsonl` y solo guarda conteos y tipos de error, sin textos ni números. `cargo run --example soak -- --resumen` lo resume sin conectarse. Para dejarlo semanas en un servidor, córrelo como servicio de systemd con `Restart=on-failure`: si quitas el dispositivo desde el teléfono, termina sin error y no se vuelve a levantar solo.
 
 ## Cuando termines
