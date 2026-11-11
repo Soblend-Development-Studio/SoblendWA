@@ -291,44 +291,63 @@ El mismo bot escrito con cada librería, cada uno en su proceso, contra el mismo
 - **Multimedia.** `!archivo` responde con un documento de 64 KB nuevo en cada pedido, así que ninguno se salva la subida con su caché.
 - **Arranque.** Antes de medir, el bot se cierra y vuelve a abrir desde su base, sin vincular de nuevo.
 
-| Mediana de 3 corridas alternadas | SoblendWA {{version}} | zapo-js 1.11 |
+Medido el 11 de noviembre de 2026 a las 17:00, con la PC sin otros programas pesados abiertos. Entre paréntesis, la peor y la mejor de las 5 corridas.
+
+| Mediana de 5 corridas alternadas | SoblendWA {{version_label}} | zapo-js 1.11 |
 |---|---|---|
-| Privado, ida y vuelta p50 / p95 | **90 / 107 ms** | 182 / 216 ms |
-| Grupo, ida y vuelta p50 | **92 ms** | 105 ms |
-| Documento de 64 KB, del pedido a recibirlo, p50 / p95 | **98 / 213 ms** | 192 / 250 ms |
-| Ráfaga de 300 mensajes, respuestas por segundo | **619** | 102 |
-| CPU del bot por mensaje, con SQLite | **1,5 ms** | 11,6 ms |
-| Memoria al terminar | **61 MB** | 126 MB |
-| Arrancar desde la base | **0,7 s** | 2,3 s |
+| Privado, ida y vuelta p50 / p95 | **90 / 94 ms** | 168 / 186 ms |
+| Grupo, ida y vuelta p50 | 91 ms | 92 ms |
+| Documento de 64 KB, del pedido a recibirlo, p50 / p95 | **91 / 167 ms** | 169 / 187 ms |
+| Ráfaga de 300 mensajes, respuestas por segundo | **1.018** (884 a 1.086) | 316 (302 a 348) |
+| CPU del bot por mensaje, con SQLite | **0,8 ms** (0,7 a 1,6) | 5,2 ms (4,5 a 5,3) |
+| Memoria al terminar | **59 MB** | 100 MB |
+| Arrancar desde la base | **0,46 s** | 0,86 s |
 
 :::note Cómo leer estos números
-Una sola máquina Windows (Ryzen 5 7520U, Node.js 22), con el módulo de Node.js en release y zapo con su configuración por defecto. La memoria incluye a Node.js en los dos, y la ráfaga varía bastante entre corridas (SoblendWA dio de 314 a 619). SoblendWA solo confía en certificados reales, así que llega al servidor de multimedia falso por un puente HTTP local, un salto que zapo no tiene.
+Una sola máquina Windows (Ryzen 5 7520U, Node.js 22), con el módulo de Node.js en release y zapo con su configuración por defecto. La memoria incluye a Node.js en los dos. SoblendWA solo confía en certificados reales, así que llega al servidor de multimedia falso por un puente HTTP local, un salto que zapo no tiene.
 
-En la primera medición el p95 de documentos salía peor que el de zapo (422 contra 285 ms). Tenía dos causas: el primer archivo esperaba un viaje más por los hosts de subida, que ahora se piden al conectar, y el puente cerraba las conexiones inactivas a los 5 s, lo que obligaba a reintentar. Hoy el único documento lento es el primero, igual que en zapo.
+Las corridas anteriores, y por qué cambiaron:
+
+| Corrida | Ráfaga, SoblendWA | Ráfaga, zapo | CPU por mensaje, zapo | Documento p95, SoblendWA | Documento p95, zapo |
+|---|---|---|---|---|---|
+| 10 de noviembre, 19:52 | 314 | 90 | 13,1 ms | 422 ms | 285 ms |
+| 10 de noviembre, 21:58, con los hosts de subida pedidos al conectar | 422 | 84 | 12,8 ms | 298 ms | 258 ms |
+| 10 de noviembre, 22:19, con el puente que ya no corta a los 5 s | 619 | 102 | 11,6 ms | 213 ms | 250 ms |
+| 11 de noviembre, 17:00, con la PC libre; la de la tabla | 1.018 | 316 | 5,2 ms | 167 ms | 187 ms |
+
+El p95 de documentos de SoblendWA bajó el 10 de noviembre por dos arreglos. El primer archivo esperaba un viaje más por los hosts de subida, que ahora se piden al conectar, y el puente cerraba las conexiones inactivas a los 5 s, lo que obligaba a reintentar.
+
+Lo del 11 de noviembre no es un arreglo. zapo pasó de 102 a 316 respuestas por segundo y de 11,6 a 5,2 ms de CPU por mensaje sin que cambiara nada suyo: el 10 de noviembre la misma PC tenía otros programas pesados abiertos, y eso frenaba a los dos. Por eso la ráfaga y la CPU solo valen como comparación dentro de una misma corrida, nunca entre corridas.
 
 El servidor falso y sus contactos corren en Node.js, en la misma máquina, y ponen un piso para los dos. Sigue sin ser WhatsApp de verdad: eso lo mide la [prueba en producción](#estado-produccion).
 :::
 
 ```bash Terminal
 npm ci --prefix tests/zapo
-node tests/zapo/versus.cjs --rtt 60 --jitter 10 --runs 3
+node tests/zapo/versus.cjs --rtt 60 --jitter 10 --runs 5
 ```
 
 ### Con internet de verdad de por medio {#rendimiento-internet}
 
-El mismo bot, pero sin red simulada: con `--via usuario@host`, el chat de cada bot va de la PC a un VPS por un túnel SSH y vuelve, así que cada paquete cruza internet dos veces, con su latencia y su jitter reales. Medido el 10 de noviembre de 2026 entre una PC en Colombia y un VPS, con unos 650 ms de ida y vuelta en ese camino.
+El mismo bot, pero sin red simulada: con `--via usuario@host`, el chat de cada bot va de la PC a un VPS por un túnel SSH y vuelve a la PC, con la latencia y el jitter reales de internet. Medido el 11 de noviembre de 2026 a las 17:04, entre una PC en Colombia y un VPS, justo después de la tabla de arriba.
 
-| Mediana de 3 corridas alternadas | SoblendWA {{version}} | zapo-js 1.11 |
+Cada sentido entre el bot y el servidor cruza internet dos veces, de la PC al VPS y de vuelta, así que cuesta lo mismo que un ping a ese VPS, unos 212 ms. Medida con eco sobre una conexión abierta por el mismo túnel, una ida y vuelta entre bot y servidor dio 392 ms, y ninguna respuesta puede bajar de ahí. SoblendWA contesta en 421 ms, unos 29 ms por encima de ese piso, como los 30 ms de la red simulada. zapo necesita dos idas y vueltas.
+
+| Mediana de 3 corridas alternadas | SoblendWA {{version_label}} | zapo-js 1.11 |
 |---|---|---|
-| Privado, ida y vuelta p50 / p95 | **458 / 913 ms** | 866 / 1.058 ms |
-| Grupo, ida y vuelta p50 | **426 ms** | 447 ms |
-| Documento de 64 KB, p50 / p95 | **441 / 934 ms** | 890 / 1.038 ms |
-| Ráfaga de 300 mensajes, respuestas por segundo | **124** | 49 |
-| CPU del bot por mensaje | **2,1 ms** | 12,8 ms |
-| Memoria al terminar | **60 MB** | 103 MB |
-| Arrancar desde la base | **2,4 s** | 3,2 s |
+| Privado, ida y vuelta p50 / p95 | **421 / 809 ms** | 830 / 916 ms |
+| Grupo, ida y vuelta p50 | 414 ms | 422 ms |
+| Documento de 64 KB, p50 / p95 | **441 / 828 ms** | 869 / 918 ms |
+| Ráfaga de 300 mensajes, respuestas por segundo | **185** (166 a 185) | 75 (23 a 108) |
+| CPU del bot por mensaje | **1,8 ms** | 4,9 ms |
+| Memoria al terminar | **59 MB** | 100 MB |
+| Arrancar desde la base | 2,24 s | **1,74 s** |
 
-Con la red real la diferencia en privado se ve clara: SoblendWA contesta en una ida y vuelta y zapo necesita casi dos. En grupo están parejos. Lo que sigue sin ser real es el servidor: es el falso de zapo.
+En grupo están parejos. Arrancar desde la base es lo único que zapo hace mejor con esta latencia: SoblendWA necesita unas idas y vueltas más antes de avisar `connected`, y con 392 ms cada una se nota; con la red simulada de 60 ms pasa al revés. El 10 de noviembre, con la PC cargada, había dado 2,4 contra 3,2 s. Lo que sigue sin ser real es el servidor: es el falso de zapo.
+
+:::note Por qué antes decía 650 ms
+La primera versión de esta sección decía "unos 650 ms de ida y vuelta". Con 458 ms de respuesta eso era imposible, y el número estaba mal medido: cronometraba una conexión nueva por el túnel, que además abre un canal SSH en cada punta, cuando los bots usan una conexión que ya está abierta. Ahora `versus.cjs --via` mide con eco sobre una conexión abierta por el mismo túnel, y el ping al VPS da lo mismo por otro camino.
+:::
 
 ```bash Terminal
 node tests/zapo/versus.cjs --via usuario@tu-vps --key ~/.ssh/tu-llave --runs 3
@@ -371,7 +390,7 @@ cargo test --release --features testing --lib -- --ignored pipeline --nocapture
 
 Dos cuentas en el mismo proceso de Node.js contra el WhatsApp falso: una manda 10.000 mensajes seguidos a la otra sin esperar cada uno. Misma máquina y mismas opciones de compilación, con la versión publicada antes de esta y con esta.
 
-| | 0.1.0 (anterior) | {{version}} |
+| | 0.1.0 (anterior) | {{version_label}} |
 |---|---|---|
 | Envíos por segundo desde JavaScript | ~7.500 | ~9.000 a 9.900, y en orden |
 | Mensajes que llegan al handler por segundo | ~4.600 | ~6.500 |
@@ -772,7 +791,7 @@ Antes de tocar tus sesiones de verdad, hazlo con una copia. Así nadie tiene que
 
 ### Simulacro con una base de producción {#migrar-simulacro}
 
-`tests/zapo/dry-run.cjs` hace el simulacro sobre todas las sesiones de una base, sin conectar nada: para cada prefijo y cada sesión corre el `check`, una importación completa a un SQLite temporal, y comprueba que la cuenta importada ya está vinculada, es decir, que entraría sin QR. Solo imprime conteos y tiempos.
+`tests/zapo/dry-run.cjs` hace el simulacro sobre todas las sesiones de una base, sin conectar nada: para cada prefijo y cada sesión corre el `check`, una importación completa a un SQLite temporal, y la comprobación de vinculación: que al abrir lo importado, SoblendWA vea una cuenta ya vinculada, con su número y sus credenciales. No la conecta, así que no prueba que WhatsApp la acepte. Solo imprime conteos y tiempos.
 
 ```bash Terminal
 mongodump --db zapo --archive | mongorestore --archive --nsInclude "zapo.wa_*" --nsFrom "zapo.*" --nsTo "zapo_copia.*"
@@ -787,7 +806,7 @@ El `--nsInclude` copia solo las colecciones de zapo y deja fuera los datos de tu
 | Sesiones encontradas | 27, de las cuales 5 vinculadas y 22 que nunca terminaron de vincularse |
 | Importadas sin error | 27 de 27, con 0 elementos que no se pudieron convertir |
 | Convertido | 2.780 sesiones Signal, 2.899 sender keys y 3.484 pre-keys, los mismos conteos que los documentos de la copia |
-| Entrarían sin QR | Las 5 vinculadas |
+| Pasaron la comprobación de vinculación | Las 5 vinculadas. Ninguna se conectó todavía con SoblendWA |
 | Tiempo | 1,5 s en total; la cuenta más grande, 148 ms |
 
 Dos cosas de zapo no se convierten. `sender_key_distribution` dice a qué dispositivos ya les llegó tu clave de grupo; sin ella, tu primer mensaje en cada grupo después de migrar vuelve a repartirla a todos, una sola vez. Y `privacy_tokens`, que WhatsApp vuelve a emitir con el uso. Ninguna de las dos impide enviar ni recibir.

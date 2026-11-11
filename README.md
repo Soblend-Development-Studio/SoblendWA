@@ -138,24 +138,28 @@ número le escribes `!ayuda`.
 
 El mismo bot escrito con cada librería, los dos guardando en SQLite, contra el mismo `@zapo-js/fake-server` con un proxy
 que mete 60 ms de ida y vuelta ± 10 ms de jitter, y con `!archivo` subiendo un documento de 64 KB nuevo en cada pedido.
-Mediana de 3 corridas alternadas, con `tests/zapo/versus.cjs`:
+Mediana de 5 corridas alternadas, con `tests/zapo/versus.cjs`, medida el 11 de noviembre de 2026 con la PC libre:
 
 | | SoblendWA | zapo-js 1.11 |
 |---|---|---|
-| Privado, ida y vuelta p50 / p95 | **90 / 107 ms** | 182 / 216 ms |
-| Grupo, ida y vuelta p50 | **92 ms** | 105 ms |
-| Documento de 64 KB, p50 / p95 | **98 / 213 ms** | 192 / 250 ms |
-| Ráfaga de 300, respuestas por segundo | **619** | 102 |
-| CPU del bot por mensaje | **1,5 ms** | 11,6 ms |
-| Memoria al terminar | **61 MB** | 126 MB |
-| Arrancar desde la base | **0,7 s** | 2,3 s |
+| Privado, ida y vuelta p50 / p95 | **90 / 94 ms** | 168 / 186 ms |
+| Grupo, ida y vuelta p50 | 91 ms | 92 ms |
+| Documento de 64 KB, p50 / p95 | **91 / 167 ms** | 169 / 187 ms |
+| Ráfaga de 300, respuestas por segundo | **1.018** | 316 |
+| CPU del bot por mensaje | **0,8 ms** | 5,2 ms |
+| Memoria al terminar | **59 MB** | 100 MB |
+| Arrancar desde la base | **0,46 s** | 0,86 s |
 
-Con internet de verdad de por medio (`--via`, un túnel PC → VPS → PC con unos 650 ms de ida y vuelta) la diferencia se
-mantiene: 458 contra 866 ms en privado, 441 contra 890 ms por documento, 124 contra 49 respuestas por segundo y 2,1
-contra 12,8 ms de CPU por mensaje.
+Con internet de verdad de por medio (`--via`, un túnel PC → VPS → PC) cada sentido entre bot y servidor cruza internet
+dos veces, y una ida y vuelta medida con eco da 392 ms. SoblendWA contesta en 421 ms y zapo en 830; por documento, 441
+contra 869 ms; 185 contra 75 respuestas por segundo, y 1,8 contra 4,9 ms de CPU por mensaje. Ahí zapo arranca más
+rápido desde la base: 1,74 contra 2,24 s.
 
-Ojo con estos números: el servidor de WhatsApp es el falso de zapo, la memoria incluye a Node en los dos y la ráfaga
-varía bastante entre corridas. Lo de verdad con WhatsApp está en la
+Ojo con estos números: el servidor de WhatsApp es el falso de zapo y la memoria incluye a Node en los dos. La ráfaga y
+la CPU dependen de qué más esté corriendo en la PC: el 10 de noviembre, con otros programas abiertos, zapo dio 102
+respuestas por segundo, y el 11, con la PC libre, 316, sin que cambiara nada suyo. Todas las corridas, con fecha y lo
+que cambió entre una y otra, están en
+[Rendimiento](https://soblend-development-studio.github.io/SoblendWA/#rendimiento). Lo de verdad con WhatsApp está en la
 [prueba en producción](https://soblend-development-studio.github.io/SoblendWA/#estado-produccion), y para ver cuánto se va
 en cada fase con tu red usa `stats().sendTimings`.
 
@@ -345,9 +349,12 @@ mensajes interactivos, canales, grupos, la recuperación de mensajes de grupo si
 red real, todo con teléfonos y números reales. Las migraciones se probaron contra libsignal-node y zapo-js 1.11 reales,
 y todo lo demás contra nuestro WhatsApp falso, que habla el protocolo real.
 
+Con dos cuentas reales y un testigo que cuenta lo que llega, 5 a 10 veces cada cosa: el outbox después de un `kill -9`
+(30 de 30 mensajes, sin duplicados y en orden), la recuperación de una sesión dañada (10 de 10, en menos de un segundo)
+y la multimedia compartida entre cuentas (5 de 5).
+
 Falta probar en real: comunidades y canales propios, catálogo, re-subida de multimedia caducada, etiquetas, el bloqueo
-con WhatsApp de verdad, qué tanto se recuperan los mensajes con MAC mala, y `joinedGroup`, la causa de `loggedOut` y
-`messageLost` con un número de verdad. PostgreSQL y Redis ya pasan contra servidores reales en el CI, pero falta usarlos
+con WhatsApp de verdad, y `joinedGroup` y la causa de `loggedOut` con un número de verdad. PostgreSQL y Redis ya pasan contra servidores reales en el CI, pero falta usarlos
 con datos de producción; MongoDB además recibe en el CI una sesión escrita por zapo y la sigue usando.
 
 Una cuenta personal real corre la prueba larga desde el 9 de noviembre de 2026 en un VPS Linux: en las primeras 19,5

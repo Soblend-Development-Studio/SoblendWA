@@ -790,7 +790,8 @@ td:first-child code {
   color: var(--danger);
 }
 
-.pill-async {
+.pill-async,
+.pill-run {
   background: var(--accent-soft);
   color: var(--accent);
 }

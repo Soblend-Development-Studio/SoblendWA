@@ -87,7 +87,7 @@ lead: Cómo se compara con otras librerías, incluido lo que ellas tienen y Sobl
 | WhatsApp falso para pruebas | Incluido | — | — | `@zapo-js/fake-server` |
 | Llamadas con audio | — | — | — | `@zapo-js/voip` |
 | Actuar como teléfono principal | — | — | — | Sí |
-| Madurez | Versión {{version}}, con una [prueba larga en producción](#estado-produccion) en marcha | Años de uso | Años de uso | Estable desde la 1.0 |
+| Madurez | Versión {{version_label}}, con una [prueba larga en producción](#estado-produccion) en marcha | Años de uso | Años de uso | Estable desde la 1.0 |
 
 `—` significa que no viene incluido o que no lo encontramos en esa versión. Si algo cambió o nos equivocamos, [abre un issue](https://github.com/Soblend-Development-Studio/SoblendWA/issues) y lo corregimos.
 
@@ -100,7 +100,7 @@ Los números medidos están en [Rendimiento](#rendimiento). Para pasar tu bot, v
 - Elige zapo si necesitas llamadas con audio o actuar como teléfono principal.
 
 === estado | Estado del proyecto | Proyecto
-lead: Versión {{version}}. Lo que se probó de verdad y contra qué, y lo que aún no. Para probar lo que falta, mira [Probar en real](#probar-en-real).
+lead: Versión {{version_label}}. Lo que se probó de verdad y contra qué, y lo que aún no. Para probar lo que falta, mira [Probar en real](#probar-en-real).
 
 ## Probado en vivo con un teléfono real {ok}
 
@@ -108,11 +108,13 @@ Comando por comando con el bot de ejemplo: vinculación por QR, mensajes privado
 
 También con una cuenta real y `!prueba`: los mensajes viejos no se ejecutan, con más de 1.000 al arrancar; número y LID resueltos; admin detectado con solo el LID; tiempos por fase; la imagen repetida sale sin volver a subirse, de 1.420 ms a 4 ms; y el outbox se vacía cuando WhatsApp confirma.
 
+Con dos cuentas reales y un testigo que cuenta lo que llega, 5 a 10 veces cada cosa: el outbox después de un `kill -9`, la recuperación de una sesión dañada y la multimedia compartida entre cuentas. Los resultados están en [Pruebas repetidas](#estado-pruebas-repetidas).
+
 Con un número real y `examples/soak.rs`, en noviembre de 2026: vincular con código; la recuperación de mensajes de grupo que llegan sin su sender key, que el reintento trae en menos de un segundo; los tiempos por fase con red real; descargar y reenviar fotos reutilizando lo ya subido; y el aviso `lidMapping`.
 
-## En producción con un número real {#estado-produccion}
+## En producción con un número real {run} {#estado-produccion}
 
-Desde el 9 de noviembre de 2026 una cuenta personal real corre `examples/soak.rs` en un VPS Linux de 2 núcleos, vinculada como un dispositivo más, sin responder a nadie más que al dueño. No es un bot de prueba: recibe todo lo que le llega a esa persona, grupos incluidos.
+Una cuenta personal real corre la prueba larga en un VPS Linux de 2 núcleos, vinculada como un dispositivo más y sin responder a nadie más que al dueño. No es un bot de prueba: recibe todo lo que le llega a esa persona, grupos incluidos. Empezó el 9 de noviembre de 2026 a las 22:53, hora de Colombia, con `examples/soak.rs`. El 10 de noviembre a las 19:06 la misma sesión pasó a `bindings/node/soak.js`, sin volver a vincular. Cuenta como estable cuando sume dos semanas.
 
 | Primeras 19,5 horas, sin reiniciar el proceso | |
 |---|---|
@@ -127,9 +129,21 @@ Desde el 9 de noviembre de 2026 una cuenta personal real corre `examples/soak.rs
 
 De las 25 reconexiones, 7 fueron cortes de red y 1 un `503` de WhatsApp. Las otras 17 eran un `stream:error` que llegaba exactamente 50 minutos después de cada conexión. Para encontrarlo, el motivo de la desconexión ahora trae el nodo completo, y en la siguiente corrida dijo `<ack class="status" type="reaction" …/>`: una reacción a un estado de la cuenta, que llega como `<status>` y que SoblendWA no confirmaba. WhatsApp la volvía a mandar en cada conexión y cortaba a los 50 minutos de no recibir el `ack`. Ya se confirma: con el arreglo desplegado, la misma cuenta pasó 16 horas seguidas sin un solo `stream:error`; los 6 cortes de ese tiempo fueron caídas de red, y cada uno se recuperó solo.
 
-Al 11 de noviembre, con 1,6 días y 4 arranques: 46.260 mensajes recibidos, 110 sin descifrar al llegar (0,24 %, todos por sender key), 91 recuperados, 15 perdidos y 0 pánicos. Desde Node.js la memoria máxima es de 134 MB, porque incluye a V8; desde Rust eran 27 MB.
+Los días se cuentan de reloj desde el primer arranque, con los reinicios dentro. El 11 de noviembre a las 13:20 iban 1,6 días (38 horas) y 4 arranques: 46.260 mensajes recibidos, 110 sin descifrar al llegar (0,24 %, todos por sender key), 91 recuperados, 15 perdidos y 0 pánicos.
 
-El 10 de noviembre la misma sesión pasó a `bindings/node/soak.js`, la misma prueba hecha con el módulo de Node.js, sin volver a vincular. Así esa prueba cubre también Node.js en Linux con un teléfono real. Los números de arriba son del primer día; la prueba sigue y cuenta como estable cuando sume dos semanas.
+La memoria de Rust y la de Node.js de esa corrida no se pueden comparar: los 27 MB de Rust son de las primeras 19,5 horas, y los 134 MB de Node.js, con V8 incluido, son del 10 de noviembre en adelante, con otro tráfico. Desde el 11 de noviembre corre también un proceso en Rust, el testigo de abajo, pero en otra cuenta con mucho menos tráfico, así que tampoco sirve para compararlos. Comparar con el mismo tráfico pide los dos procesos en la misma cuenta a la vez, y eso sigue pendiente.
+
+### Pruebas repetidas con dos cuentas {#estado-pruebas-repetidas}
+
+El 11 de noviembre de 2026, de 17:38 a 17:50, con la cuenta de la prueba larga y una segunda cuenta real como [testigo](#probar-testigo): otro número, vinculado con `examples/soak.rs`, que anota lo que de verdad le llega. Las tres series corrieron solas en el VPS, sin tocar ningún teléfono.
+
+| Prueba | Rondas | Resultado |
+|---|---|---|
+| 5 mensajes y `kill -9` a mitad del envío, entre 25 y 354 ms después | 10 | 30 aceptados y 30 recibidos por el testigo, 0 duplicados, en orden las 10 veces; la cola reenvió 17 al volver |
+| Imagen nueva, `kill -9`, y la misma imagen otra vez desde el mismo proceso y desde la otra cuenta | 5 | Reutilizada 5 de 5 después del `kill -9`, y 5 de 5 desde la otra cuenta, por el store compartido |
+| Sesión con la otra cuenta dañada, y su respuesta de vuelta por esa sesión | 10 | 10 de 10 recuperadas con un reintento, entre 925 y 934 ms; ninguna perdida |
+
+En 4 de las 10 rondas de `kill -9` el proceso murió antes de aceptar ningún envío, mientras pedía los dispositivos del contacto nuevo, y ninguno de esos mensajes llegó. Es lo correcto: nadie había recibido un id. Preparando esta serie apareció un bug real: `send_*` devolvía el id antes de que el outbox estuviera escrito, porque los stores escriben hasta 50 ms después, así que un `kill -9` en ese hueco perdía un mensaje ya aceptado. Una prueba lo reproduce, y estaba arreglado antes de correr la serie.
 
 ## Probado contra los servidores de WhatsApp, sin teléfono {ok}
 
@@ -147,7 +161,7 @@ Mensajes privados y de grupo entre cuentas, mensajes dañados o sin sender key q
 
 ## Probado en CI
 
-Las pruebas pasan en Linux, Windows y macOS, y el código compila con Rust 1.89. Se compilan 16 binarios para las distintas plataformas, y cada módulo de Node.js se carga en la suya. En Linux, el módulo de Node.js corre la [prueba larga](#estado-produccion) con un número real desde el 10 de noviembre de 2026. En macOS los paquetes todavía no se han usado fuera del CI.
+Las pruebas pasan en Linux, Windows y macOS, y el código compila con Rust 1.89. Se compilan 16 binarios para las distintas plataformas, cada módulo de Node.js se carga en la suya, y los módulos de Node.js y Python corren sus pruebas contra el WhatsApp falso. Después de cada publicación, `published.yml` instala lo que quedó en npm, PyPI y crates.io en máquinas limpias de Linux (x64 y arm64), macOS y Windows, y conecta con WhatsApp hasta recibir el QR, sin vincular nada. En macOS los paquetes todavía no se han usado fuera del CI. Lo que corre con un número real está en [En producción](#estado-produccion), no aquí.
 
 ## Experimental {exp}
 
@@ -157,14 +171,12 @@ Implementado y probado solo localmente, todavía no contra una cuenta real:
 - Catálogo de empresa y mensajes de producto.
 - Re-subida de multimedia caducada.
 - Etiquetas, respuestas rápidas y etiquetas de miembro.
-- El reenvío del outbox tras una caída real.
-- Qué tanto se recuperan con el reintento los mensajes con MAC mala.
 - El evento de cuenta bloqueada con un bloqueo real.
 - La reutilización de multimedia pasada la hora, con verificación en el CDN.
 - La miniatura nítida de la vista previa.
 - Los eventos de foto, información, bloqueos y privacidad.
 - El canario diario.
-- Lo nuevo de la {{minor}} con WhatsApp real: `joinedGroup` y `leftGroup`, la causa de `loggedOut`, `messageLost`, la multimedia compartida entre cuentas y el orden de los envíos.
+- Lo nuevo de la {{minor}} con WhatsApp real: `joinedGroup` y `leftGroup`, y la causa de `loggedOut`.
 
 `PostgresStore` y `RedisStore` ya pasan contra servidores reales en el CI (PostgreSQL 16 y Redis 7), pero todavía no se han usado con datos de producción. `MongoStore` y la importación desde `@zapo-js/store-mongo` dejaron de ser experimentales: el CI migra una sesión que escribió zapo en MongoDB 7, sigue las mismas conversaciones y la devuelve ([cómo](#migrar-zapo-ida-y-vuelta)).
 
@@ -281,6 +293,8 @@ cargo run --release --example soak -- --pair 5215512345678
 | `!yowner lid` | Tu número, tu LID y la consulta en los dos sentidos |
 | `!yowner foto` | Reenvía la última foto que mandaste en ese chat; la segunda vez no se vuelve a subir |
 
+Si quieres ver la prueba día por día, `node soak.js <carpeta> --por-dia` arma una tabla con los recibidos, los que no se pudieron descifrar, los recuperados, los perdidos, los cortes con su causa, la memoria máxima y los arranques, separando lo que corrió en Rust de lo que corrió en Node.js. Sirve con la carpeta de cualquiera de los dos.
+
 Si prefieres Node.js, `node soak.js <carpeta>` (viene en `soblendwa-node`) hace exactamente lo mismo con la misma carpeta y el mismo reporte, así que puedes pasar de uno a otro sin volver a vincular.
 
 La versión de Node.js trae además comandos para provocar, con tu propio número, los casos que en la vida real dependen de la mala suerte:
@@ -293,11 +307,40 @@ La versión de Node.js trae además comandos para provocar, con tu propio númer
 
 `!yowner mac` no toca tu teléfono ni tus chats con otros: solo el estado del bot. Usan `simulate_outage` y `damage_sessions`, que existen con la feature `testing` para esto mismo. El aviso de cuenta bloqueada no tiene comando: provocarlo de verdad es arriesgar la cuenta.
 
+### Repetirlas con un testigo {#probar-testigo}
+
+Una prueba que sale bien una vez no dice mucho. Para repetirlas y contar lo que llegó de verdad hace falta un testigo: `examples/soak.rs` vinculado aparte, con otra palabra para sus comandos, que anota en su reporte las pruebas que le llegan y no contesta tus `!yowner`.
+
+Lo mejor es ponerlo en un segundo número. `soak.js` le manda las pruebas como a cualquier contacto, el testigo solo anota las que vienen de tu número (`--testigo-de`), la multimedia compartida se prueba entre dos cuentas y `!yowner mac 10` corre sin tu teléfono: daña la sesión con el testigo y le pide una respuesta, que vuelve por esa sesión dañada.
+
+```bash Terminal
+cargo run --release --example soak --features sqlite -- sesion-testigo --comando '!yrust' --compartida compartida --testigo-de 5215512345678 --pair 5215598765432
+node soak.js sesion-node --testigo sesion-testigo/soak.jsonl --numero-testigo 5215598765432 --compartida compartida
+```
+
+Con un solo número, el testigo puede ser un segundo dispositivo del mismo: quita `--testigo-de` y `--numero-testigo`, y vincúlalo con tu propio número. Entonces `!yowner mac` necesita tu teléfono, como arriba.
+
+| Comando | Qué hace cada ronda | Qué cuenta |
+|---|---|---|
+| `!yowner mac 10` | Con el testigo en otro número: daña la sesión con él y espera su respuesta. Sin él, cada `!yowner mac` que mandas llega dañado y mide la ronda anterior | Cuánto tardó en volver, o si se perdió |
+| `!yowner caida 10` | Manda 5 mensajes y mata el proceso con `kill -9` a un tiempo al azar entre 0 y 400 ms. systemd lo levanta, y a los 20 s compara con el testigo | Aceptados que no llegaron, duplicados y orden |
+| `!yowner compartida 5` | Sube una imagen nueva y mata el proceso con `kill -9`; al volver la manda otra vez, y el testigo la manda desde el store de multimedia compartido | Si se reutilizó después del `kill -9` y desde el otro dispositivo |
+| `!yowner pruebas` | | La tabla de todas las rondas |
+| `!yowner parar` | | No empieza más rondas |
+
+Después de un `kill -9`, WhatsApp puede volver a entregar el `!yowner` que lo provocó, así que `soak.js` anota los comandos que ya corrió y no repite ninguno. `node soak.js sesion-node --pruebas` saca la misma tabla sin conectarse, ronda por ronda.
+
+En un servidor también se lanzan sin escribir en WhatsApp: pon lo que irías a escribir después de `!yowner` en `<carpeta>/orden` y mándale `SIGUSR2` al proceso. Las respuestas llegan a tu chat igual que si lo hubieras escrito.
+
+```bash Terminal
+echo "caida 10" > sesion-node/orden && kill -USR2 "$(pgrep -f 'soak.js sesion-node')"
+```
+
 Con la cuenta de la prueba larga, el 11 de noviembre de 2026:
 
 - `cola`: después del corte, los 3 mensajes salieron por la cola.
 - `media` y `reiniciar`: después de reiniciar el proceso, la imagen salió de la multimedia guardada, dos veces seguidas.
-- `mac`: el mensaje se recuperó en 1,5 s, pero con dos reintentos. El primero no llevaba llaves y el teléfono reenvió por la misma sesión dañada, así que falló otra vez. Desde entonces el primer reintento ya las lleva cuando lo que falló es la sesión.
+- `mac`: el mensaje se recuperó en 1,5 s, pero con dos reintentos. El primero no llevaba llaves y el teléfono reenvió por la misma sesión dañada, así que falló otra vez. Con el primer reintento llevando las llaves, la misma prueba dio un solo `bad_mac`, recuperado en 0,8 s.
 
 El reporte va en `<carpeta>/soak.jsonl` y solo guarda conteos y tipos de error, sin textos ni números. `cargo run --example soak -- --resumen` lo resume sin conectarse. Para dejarlo semanas en un servidor, córrelo como servicio de systemd con `Restart=on-failure`: si quitas el dispositivo desde el teléfono, termina sin error y no se vuelve a levantar solo.
 
@@ -330,7 +373,7 @@ SoblendWA es una implementación propia, y existe gracias a lo que documentaron 
 - Documentación generada de Rust: [docs.rs](https://docs.rs/soblendwa).
 
 === versiones | Versiones y cambios | Proyecto
-lead: Esta documentación es de la versión {{version}}. Abajo está el historial completo, el mismo de `CHANGELOG.md`.
+lead: Esta documentación es de la versión {{version_label}}. Abajo está el historial completo, el mismo de `CHANGELOG.md`.
 
 {{release_note}}
 

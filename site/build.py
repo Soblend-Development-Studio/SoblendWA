@@ -40,6 +40,8 @@ def stale_versions(path, text):
 RELEASES = re.findall(r"(?m)^## (\d+\.\d+\.\d+) \(([^)]*)\)", (root / "CHANGELOG.md").read_text(encoding="utf-8"))
 UNRELEASED = any(version == VERSION and "sin publicar" in when for version, when in RELEASES)
 PUBLISHED = next((version for version, when in RELEASES if "sin publicar" not in when), VERSION)
+# What prose, tables and the footer call this version; code snippets keep {{version}}, the number you would pin.
+VERSION_LABEL = f"{VERSION} (sin publicar)" if UNRELEASED else VERSION
 RELEASE_NOTE = (
     f":::note La {VERSION} todavía no está publicada\n"
     f"Esta documentación ya describe la {VERSION}. En crates.io, npm y PyPI la última es la {PUBLISHED}: "
@@ -51,7 +53,8 @@ RELEASE_NOTE = (
 
 def expand(text):
     return (
-        text.replace("{{version}}", VERSION)
+        text.replace("{{version_label}}", VERSION_LABEL)
+        .replace("{{version}}", VERSION)
         .replace("{{minor}}", MINOR)
         .replace("{{published}}", PUBLISHED)
         .replace("{{release_note}}", RELEASE_NOTE)
@@ -120,6 +123,7 @@ PILLS = {
     "{exp}": '<span class="pill pill-exp">Experimental</span>',
     "{ok}": '<span class="pill pill-ok">Probado</span>',
     "{no}": '<span class="pill pill-no">No incluido</span>',
+    "{run}": '<span class="pill pill-run">En curso</span>',
 }
 
 
@@ -509,7 +513,7 @@ try {{
 <div class="sidebar-scrim"></div>
 <div class="layout">
   <aside class="sidebar" aria-label="Navegación de la documentación">
-    <a class="brand" href="#inicio">{LOGO}<span class="brand-name">SoblendWA</span><span class="brand-version">{VERSION}</span></a>
+    <a class="brand" href="#inicio">{LOGO}<span class="brand-name">SoblendWA</span><span class="brand-version">{VERSION_LABEL}</span></a>
     <button type="button" class="search-trigger" aria-label="Buscar en la documentación">{SEARCH}<span>Buscar</span><kbd>Ctrl K</kbd></button>
     <nav class="nav">
 {"".join(nav)}
@@ -523,7 +527,7 @@ try {{
     <main class="content">
 {chr(10).join(page_html)}
       <nav class="pager" aria-label="Páginas siguiente y anterior"></nav>
-      <p class="site-foot">SoblendWA {VERSION} · MIT · Soblend Development Studio. Proyecto independiente, sin relación con WhatsApp ni Meta.</p>
+      <p class="site-foot">SoblendWA {VERSION_LABEL} · MIT · Soblend Development Studio. Proyecto independiente, sin relación con WhatsApp ni Meta.</p>
     </main>
     <aside class="toc" aria-label="Contenido de esta página"></aside>
   </div>

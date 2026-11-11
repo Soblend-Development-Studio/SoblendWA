@@ -2,7 +2,7 @@
 
 :::raw
 <header class="home-hero">
-  <p class="eyebrow">Docs de SoblendWA {{minor}}</p>
+  <p class="eyebrow">Docs de SoblendWA {{version_label}}</p>
   <h1>Bots de WhatsApp con un motor en Rust.</h1>
   <p class="lead">SoblendWA habla el protocolo de WhatsApp Web sin navegador: WebSocket, Noise, nodos binarios y Signal. Lo usas desde Rust, Node.js, Python o cualquier lenguaje que hable WebSocket o HTTP. Aquí está todo, desde el primer bot hasta correr cincuenta cuentas en un proceso.</p>
   <div class="home-actions">
@@ -45,13 +45,13 @@ npm install soblendwa-client
 El mismo bot con zapo-js 1.11 y con SoblendWA, los dos guardando en SQLite, con 60 ms de red de por medio y subiendo documentos.
 
 :::stats
-90 ms :: ida y vuelta en privado (p50), frente a 182 ms
-1,5 ms :: de CPU por mensaje, frente a 11,6 ms
-61 MB :: de memoria con Node.js incluido, frente a 126 MB
-0,7 s :: para arrancar desde la base, frente a 2,3 s
+90 ms :: ida y vuelta en privado (p50), frente a 168 ms
+0,8 ms :: de CPU por mensaje, frente a 5,2 ms
+59 MB :: de memoria con Node.js incluido, frente a 100 MB
+0,46 s :: para arrancar desde la base, frente a 0,86 s
 :::
 
-El servidor de WhatsApp es falso y corre en la misma máquina. Con internet de verdad de por medio la diferencia se mantiene: 458 contra 866 ms en privado. El método y cómo repetirlo están en [Rendimiento](#rendimiento).
+El servidor de WhatsApp es falso y corre en la misma máquina. Con internet de verdad de por medio la diferencia se mantiene en privado, 421 contra 830 ms, aunque ahí zapo arranca más rápido. El método y cómo repetirlo están en [Rendimiento](#rendimiento).
 
 {{release_note}}
 

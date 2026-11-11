@@ -51,10 +51,22 @@ arregla. Para no llevarte sorpresas fija la versión exacta que instalas, sin `^
 - `tests/zapo/dry-run.cjs`: el simulacro de migración sobre todas las sesiones de una base de zapo, sin conectar nada.
   Con la base de un bot real: 27 sesiones, 0 errores, 1,5 s.
 - `versus.cjs --via usuario@host`: la misma comparación con la red de verdad de por medio, por un túnel SSH de ida y
-  vuelta.
+  vuelta. La red se mide con eco sobre una conexión abierta (la primera versión cronometraba una conexión nueva y daba
+  650 ms, más de lo que tardaba el bot en contestar), y el reporte guarda la fecha y el rango de cada número.
 - Con la feature `testing`: `simulate_outage()` y `damage_sessions(jid)` para probar con un número real el outbox y el
   reintento; en `soak.js`, `!yowner cola`, `!yowner mac`, `!yowner media` y `!yowner reiniciar`.
 - Guía de equivalencias desde zapo, y cómo se detecta cada causa de `loggedOut`.
+- `soak.js` repite las pruebas en vivo y las cuenta con un testigo, un segundo dispositivo del mismo número con
+  `examples/soak.rs --comando`: `!yowner caida N` (5 mensajes y `kill -9` a mitad del envío), `!yowner compartida N`
+  (multimedia compartida entre dispositivos tras un `kill -9`), `!yowner mac` repetible, `!yowner pruebas` con la tabla
+  y `--por-dia` con una fila por día y por proceso. Los comandos que WhatsApp vuelve a entregar tras un `kill -9` no se
+  repiten, y cada conexión pide su propio código para vincular. Con el testigo en otro número (`--numero-testigo` y
+  `--testigo-de`) la multimedia compartida se prueba entre dos cuentas y `!yowner mac 10` corre sin teléfono. En un
+  servidor, `<carpeta>/orden` y `SIGUSR2` lanzan cualquier comando sin escribir en WhatsApp. Con dos cuentas reales:
+  `kill -9` 10 de 10 sin perder ni duplicar, MAC dañada 10 de 10 recuperada, multimedia compartida 5 de 5.
+- `published.yml`: después de cada publicación instala desde npm, PyPI y crates.io en máquinas limpias y conecta hasta
+  recibir el QR.
+- La documentación dice "0.2.0 (sin publicar)" en el encabezado, el pie y las tablas hasta que la versión tiene fecha.
 - La fuente de la documentación vive en `site/`: la versión sale de `Cargo.toml`, el historial de este archivo, y el
   CI falla si `docs/index.html` quedó viejo, si hay un enlace roto, si una página menciona una versión que no es la
   actual o si un ejemplo de Rust no compila.
@@ -98,9 +110,13 @@ Medido en la misma máquina antes y después (`pipeline` y `throughput` en las p
 - Python: si salías de `events()` a la mitad de un lote, el resto del lote se perdía.
 - Con la sesión dañada (`bad message mac`), un mensaje necesitaba dos reintentos: el primero no llevaba llaves y el
   teléfono reenviaba por la misma sesión. Ahora las lleva desde el primero cuando falló un `msg` o `pkmsg`, y
-  `undecryptableMessage` sale una sola vez por mensaje aunque el reenvío también falle. Visto con `!yowner mac`.
+  `undecryptableMessage` sale una sola vez por mensaje aunque el reenvío también falle. Visto con `!yowner mac`; con
+  el arreglo, la misma prueba se recupera con un solo reintento, en 0,8 s.
 - `!yowner reiniciar` en `soak.js` salía sin guardar los contadores, y el resumen perdía lo que pasó desde la última
   foto.
+- `send_*` devuelve el id antes de que WhatsApp confirme, pero el outbox se escribía hasta 50 ms después (los stores
+  escriben en lote). Un `kill -9` en ese hueco perdía un mensaje que ya se había dado por enviado, junto con el avance
+  de la sesión Signal. Ahora la entrada del outbox se escribe antes de mandar.
 - Las reacciones a tus estados llegan como `<status type="reaction">` y no se confirmaban: WhatsApp cortaba la conexión
   50 minutos después y la volvía a mandar en cada reconexión, para siempre. Lo encontró la prueba larga con un número
   real (17 reconexiones forzadas en 19 horas) una vez que el motivo de la desconexión empezó a traer el nodo completo.
