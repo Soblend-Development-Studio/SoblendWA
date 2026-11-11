@@ -762,13 +762,14 @@ impl Client {
         }
     }
 
-    pub(crate) async fn await_retry(&self, info: &MessageInfo, error: &str) {
+    /// False when the message was already waiting: a resend that failed again is not a new failure.
+    pub(crate) async fn await_retry(&self, info: &MessageInfo, error: &str) -> bool {
         if self.inner.awaiting_retry.contains_key(&info.id) {
-            return;
+            return false;
         }
         if self.inner.awaiting_retry.len() >= MAX_AWAITING_RETRY {
             tracing::warn!(id = %info.id, "too many messages awaiting a retry, not tracking this one");
-            return;
+            return true;
         }
         let awaiting = Awaiting {
             chat: info.chat.clone(),
@@ -782,6 +783,7 @@ impl Client {
         }
         self.inner.awaiting_retry.insert(info.id.clone(), awaiting);
         self.give_up_later(info.id.clone(), self.inner.config.retry_deadline);
+        true
     }
 
     fn give_up_later(&self, id: String, after: Duration) {

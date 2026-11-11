@@ -168,7 +168,7 @@ function phases(bot) {
   ].join('\n')
 }
 
-async function answer(bot, message, command, lastImage) {
+async function answer(bot, message, command, lastImage, restart = () => process.exit(75)) {
   const chat = message.info.chat
   let text
   switch (command) {
@@ -223,7 +223,7 @@ async function answer(bot, message, command, lastImage) {
     case 'reiniciar':
       await bot.sendText(chat, 'Reinicio el proceso; vuelvo en unos 20 s.', { preview: false })
       write('restartRequested')
-      setTimeout(() => process.exit(75), 500)
+      setTimeout(restart, 500)
       return
     case 'mac': {
       const phone = `${bot.me.split(':')[0].split('@')[0]}@s.whatsapp.net`
@@ -333,7 +333,7 @@ async function main() {
     }
     const command = ownerCommand(message)
     if (command === null) return
-    answer(bot, message, command, lastImage.get(message.info.chat)).catch(async (error) => {
+    answer(bot, message, command, lastImage.get(message.info.chat), () => stop(75)).catch(async (error) => {
       console.error(`no pude responder ${COMMAND} ${command}: ${error.message}`)
       write('replyFailed', { error: error.code || 'OTHER' })
       await bot.sendText(message.info.chat, `error ${error.code || 'OTHER'}: ${error.message}`).catch(() => {})

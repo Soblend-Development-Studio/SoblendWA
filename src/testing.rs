@@ -73,6 +73,7 @@ struct World {
     uploads: u64,
     upload_delay: Duration,
     routed: u64,
+    retries: u64,
 }
 
 struct Shared {
@@ -770,6 +771,7 @@ impl Shared {
         let Some(target) = target.map(|t| t.to_non_device()) else { return };
         let mut world = self.world.lock();
         let is_retry = node.attr_is("type", "retry");
+        world.retries += u64::from(is_retry);
         let requester = if is_retry { from.clone() } else { from.to_non_device() };
         let receipt = Node::new("receipt")
             .attr("id", id)
@@ -1607,6 +1609,8 @@ mod tests {
         let text = next_text(&mut bot_events).await;
         assert_eq!(text.text(), Some("después"), "the retry brought it back");
         assert_eq!(bot.stats().recovered, 1);
+        assert_eq!(bot.stats().undecryptable, 1);
+        assert_eq!(fake.shared.world.lock().retries, 1, "the first retry has to bring the keys");
     }
 
     #[tokio::test]

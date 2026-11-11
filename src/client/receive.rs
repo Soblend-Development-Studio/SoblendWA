@@ -36,6 +36,7 @@ impl Client {
 
         let mut combined: Option<Message> = None;
         let mut failure: Option<Error> = None;
+        let mut session_failed = false;
         for enc in node.nodes().iter().filter(|n| n.tag == "enc" || n.tag == "plaintext") {
             let Some(data) = enc.content_bytes() else { continue };
             match self.decrypt_payload(&info, enc, data).await {
@@ -49,6 +50,7 @@ impl Client {
                 },
                 Err(err) => {
                     tracing::warn!(id = %info.id, sender = %info.sender, %err, "failed to decrypt message");
+                    session_failed |= enc.tag == "enc" && matches!(enc.attr_str("type"), Some("msg" | "pkmsg"));
                     failure = Some(err);
                 }
             }
@@ -79,11 +81,13 @@ impl Client {
             }
             (Some(message), None) => self.acknowledge_delivery(&node, &info, &message),
             (_, Some(err)) => {
-                self.await_retry(&info, &err.to_string()).await;
-                if let Err(retry_err) = self.request_retry(&node, &info).await {
+                let first = self.await_retry(&info, &err.to_string()).await;
+                if let Err(retry_err) = self.request_retry(&node, &info, session_failed).await {
                     tracing::debug!(%retry_err, "could not send retry receipt");
                 }
-                self.emit(Event::UndecryptableMessage { info: Box::new(info), error: err.to_string() });
+                if first {
+                    self.emit(Event::UndecryptableMessage { info: Box::new(info), error: err.to_string() });
+                }
             }
             (None, None) => {}
         }
@@ -295,7 +299,7 @@ impl Client {
         }
     }
 
-    async fn request_retry(&self, node: &Node, info: &MessageInfo) -> Result<()> {
+    async fn request_retry(&self, node: &Node, info: &MessageInfo, session_failed: bool) -> Result<()> {
         let count = self.bump_retry(&format!("{}:{}", info.id, info.sender));
         if count > MAX_RETRY_REQUESTS {
             return Ok(());
@@ -321,7 +325,9 @@ impl Client {
             retry.set_attr("t", t.clone());
         }
         let mut children = vec![retry, Node::new("registration").bytes(creds.registration_id.to_be_bytes().to_vec())];
-        if count > 1 {
+        // A first retry without keys gets the resend through the same session. When that session is what failed
+        // here, the resend fails too (seen live: two bad MACs per message), so the keys go in from the start.
+        if count > 1 || session_failed {
             let (id, pair) =
                 self.generate_pre_keys(1).await?.pop().ok_or_else(|| Error::signal("no pre-key generated"))?;
             let mut keys = vec![
