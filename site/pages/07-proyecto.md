@@ -131,6 +131,17 @@ De las 25 reconexiones, 7 fueron cortes de red y 1 un `503` de WhatsApp. Las otr
 
 Los días se cuentan de reloj desde el primer arranque, con los reinicios dentro. El 11 de noviembre a las 13:20 iban 1,6 días (38 horas) y 4 arranques: 46.260 mensajes recibidos, 110 sin descifrar al llegar (0,24 %, todos por sender key), 91 recuperados, 15 perdidos y 0 pánicos.
 
+Día por día, con `node soak.js <carpeta> --por-dia`, hasta el 11 de noviembre a las 19:45:
+
+| Día | Proceso | Recibidos | Sin descifrar | Recuperados | Perdidos | Cortes | Memoria máx. | Arranques |
+|---|---|---|---|---|---|---|---|---|
+| 9 de noviembre, desde las 22:53 | Rust | 3.273 | 8 | 8 | 0 | 1 `stream:error` | 21 MB | 1 |
+| 10 de noviembre, hasta las 19:06 | Rust | 26.811 | 72 | 59 | 11 | 17 `stream:error`, 7 de red, 1 `503` | 27 MB | 0 |
+| 10 de noviembre, desde las 19:06 | Node.js | 14.507 | 13 | 9 | 3 | 1 `stream:error`, 1 de red | 123 MB | 3 |
+| 11 de noviembre | Node.js | 4.428 | 65 | 55 | 8 | 7 de red, 2 `503`, 1 de prueba, 1 reinicio | 139 MB | 20 |
+
+Los `stream:error` del 9 y el 10 de noviembre son el bug de las reacciones a estados, ya arreglado. El 11 de noviembre incluye las [pruebas repetidas](#estado-pruebas-repetidas): 15 `kill -9`, 12 sesiones dañadas a propósito y los reinicios para desplegar. Los recibidos salen de una foto de los contadores cada 10 minutos, así que un `kill -9` pierde lo que pasó desde la última.
+
 La memoria de Rust y la de Node.js de esa corrida no se pueden comparar: los 27 MB de Rust son de las primeras 19,5 horas, y los 134 MB de Node.js, con V8 incluido, son del 10 de noviembre en adelante, con otro tráfico. Desde el 11 de noviembre corre también un proceso en Rust, el testigo de abajo, pero en otra cuenta con mucho menos tráfico, así que tampoco sirve para compararlos. Comparar con el mismo tráfico pide los dos procesos en la misma cuenta a la vez, y eso sigue pendiente.
 
 ### Pruebas repetidas con dos cuentas {#estado-pruebas-repetidas}
@@ -144,6 +155,8 @@ El 11 de noviembre de 2026, de 17:38 a 17:50, con la cuenta de la prueba larga y
 | Sesión con la otra cuenta dañada, y su respuesta de vuelta por esa sesión | 10 | 10 de 10 recuperadas con un reintento, entre 925 y 934 ms; ninguna perdida |
 
 En 4 de las 10 rondas de `kill -9` el proceso murió antes de aceptar ningún envío, mientras pedía los dispositivos del contacto nuevo, y ninguno de esos mensajes llegó. Es lo correcto: nadie había recibido un id. Preparando esta serie apareció un bug real: `send_*` devolvía el id antes de que el outbox estuviera escrito, porque los stores escriben hasta 50 ms después, así que un `kill -9` en ese hueco perdía un mensaje ya aceptado. Una prueba lo reproduce, y estaba arreglado antes de correr la serie.
+
+El testigo es una cuenta recién vinculada, y ahí apareció algo que la cuenta de la prueba larga no muestra. En sus primeras dos horas, 83 mensajes que le llegaron no se pudieron descifrar por MAC mala, y 73 no volvieron con el reintento. En la cuenta larga son 6 en dos días, sin contar las pruebas. Está en investigación. También se vio que un mensaje de grupo ya descifrado que WhatsApp vuelve a entregar después de un reinicio se cuenta como fallo, cuando es un duplicado.
 
 ## Probado contra los servidores de WhatsApp, sin teléfono {ok}
 
@@ -161,7 +174,7 @@ Mensajes privados y de grupo entre cuentas, mensajes dañados o sin sender key q
 
 ## Probado en CI
 
-Las pruebas pasan en Linux, Windows y macOS, y el código compila con Rust 1.89. Se compilan 16 binarios para las distintas plataformas, cada módulo de Node.js se carga en la suya, y los módulos de Node.js y Python corren sus pruebas contra el WhatsApp falso. Después de cada publicación, `published.yml` instala lo que quedó en npm, PyPI y crates.io en máquinas limpias de Linux (x64 y arm64), macOS y Windows, y conecta con WhatsApp hasta recibir el QR, sin vincular nada. En macOS los paquetes todavía no se han usado fuera del CI. Lo que corre con un número real está en [En producción](#estado-produccion), no aquí.
+Las pruebas pasan en Linux, Windows y macOS, y el código compila con Rust 1.89. Se compilan 16 binarios para las distintas plataformas, cada módulo de Node.js se carga en la suya, y los módulos de Node.js y Python corren sus pruebas contra el WhatsApp falso. Después de cada publicación, `published.yml` instala lo que quedó en npm, PyPI y crates.io en máquinas limpias de Linux (x64 y arm64), macOS y Windows, y conecta con WhatsApp hasta recibir el QR, sin vincular nada. Con la 0.2.0, el 11 de noviembre de 2026, pasó en las 8. Fuera de esas máquinas, en macOS los paquetes todavía no los ha usado nadie. Lo que corre con un número real está en [En producción](#estado-produccion), no aquí.
 
 ## Experimental {exp}
 

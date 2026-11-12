@@ -364,6 +364,9 @@ confirmaban y WhatsApp cortaba la conexión cada 50 minutos; ya está arreglado.
 misma sesión desde el módulo de Node.js. Los detalles están en
 [Estado](https://soblend-development-studio.github.io/SoblendWA/#estado-produccion).
 
+La 0.2.0 se instaló desde npm, PyPI y crates.io en máquinas limpias de Linux, macOS y Windows, y conectó con WhatsApp
+en todas.
+
 Si algo falla con tu cuenta, abre un [issue](https://github.com/Soblend-Development-Studio/SoblendWA/issues) con el
 error. Si es una falla de seguridad, mejor en privado como dice
 [SECURITY.md](https://github.com/Soblend-Development-Studio/SoblendWA/blob/main/SECURITY.md).
