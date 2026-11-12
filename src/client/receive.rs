@@ -13,9 +13,15 @@ use crate::events::{Event, MessageEvent, MessageInfo};
 use crate::jid::Jid;
 use crate::message::{now_secs, unpad};
 use crate::proto::{Message, ProtocolMessage};
-use crate::signal::EncType;
+use crate::signal::{is_replay, EncType};
 
 const MAX_RETRY_REQUESTS: u32 = 5;
+
+// The same device under its other identity: the phone number of a LID sender, or the LID of a phone-number one.
+fn other_address(info: &MessageInfo) -> Option<String> {
+    let other = if info.sender.is_lid() { info.sender_phone.as_ref() } else { info.sender_lid.as_ref() }?;
+    Some(other.with_device(info.sender.device).signal_address())
+}
 
 impl Client {
     pub(super) async fn handle_message(&self, node: Node) {
@@ -48,6 +54,10 @@ impl Client {
                     }
                     None => combined = Some(message),
                 },
+                Err(err) if is_replay(&err) => {
+                    tracing::debug!(id = %info.id, sender = %info.sender, "a message whose keys were already spent");
+                    failure = Some(err);
+                }
                 Err(err) => {
                     tracing::warn!(id = %info.id, sender = %info.sender, %err, "failed to decrypt message");
                     session_failed |= enc.tag == "enc" && matches!(enc.attr_str("type"), Some("msg" | "pkmsg"));
@@ -80,6 +90,12 @@ impl Client {
                 }
             }
             (Some(message), None) => self.acknowledge_delivery(&node, &info, &message),
+            (_, Some(err)) if is_replay(&err) => {
+                // decrypted before and handed back after a reconnect: asking for it again would only count a
+                // message we already delivered as lost
+                super::guard::Counters::bump(&self.inner.counters.duplicates);
+                self.forget_retry(&info.id);
+            }
             (_, Some(err)) => {
                 let first = self.await_retry(&info, &err.to_string()).await;
                 if let Err(retry_err) = self.request_retry(&node, &info, session_failed).await {
@@ -236,8 +252,22 @@ impl Client {
         let plaintext = match kind {
             "plaintext" => return Ok(Message::decode(data)?),
             "skmsg" => signal.group_decrypt(&info.chat.to_string(), &info.sender.signal_address(), data).await?,
-            "pkmsg" => signal.decrypt(&info.sender.signal_address(), EncType::PreKey, data).await?,
-            "msg" => signal.decrypt(&info.sender.signal_address(), EncType::Message, data).await?,
+            "pkmsg" | "msg" => {
+                let kind = if kind == "pkmsg" { EncType::PreKey } else { EncType::Message };
+                let address = info.sender.signal_address();
+                match signal.decrypt(&address, kind, data).await {
+                    Ok(plaintext) => plaintext,
+                    Err(err) if is_replay(&err) => return Err(err),
+                    Err(err) => {
+                        let Some(other) = other_address(info).filter(|other| *other != address) else {
+                            return Err(err);
+                        };
+                        let plaintext = signal.decrypt_moved(&address, &other, kind, data).await.map_err(|_| err)?;
+                        tracing::info!(%address, %other, "the sender used its other address's session; moved it");
+                        plaintext
+                    }
+                }
+            }
             other => return Err(Error::signal(format!("unknown encryption type {other}"))),
         };
         let body = unpad(&plaintext).ok_or_else(|| Error::signal("invalid message padding"))?;

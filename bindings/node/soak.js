@@ -95,6 +95,18 @@ function errorKind(error) {
 }
 
 const isPrivate = (chat) => chat.endsWith('@s.whatsapp.net') || chat.endsWith('@lid')
+const userOf = (jid) => (jid || '').split(':')[0].split('@')[0]
+
+// Where a message that failed came from, without saying who: a group, statuses, the account's own devices, or
+// someone in private.
+const own = { lid: null }
+
+function chatKind(bot, chat, fromMe = false) {
+  if (chat.endsWith('@g.us')) return 'grupo'
+  if (chat === 'status@broadcast') return 'estado'
+  if (fromMe || [bot.me, own.lid].some((jid) => jid && userOf(jid) === userOf(chat))) return 'propio'
+  return 'privado'
+}
 
 function ownerCommand(message) {
   const { info } = message
@@ -623,6 +635,7 @@ async function main() {
   bot.on('connected', () => {
     console.log(`Conectado como ${bot.me}. Escribe ${COMMAND} en tu chat contigo mismo.`)
     write('connected')
+    bot.lidForPhone(selfChat(bot)).then((lid) => { own.lid = lid }, () => {})
     if (resumed) return
     resumed = true
     // long enough for the outbox to empty and the witness to see what arrived
@@ -645,17 +658,19 @@ async function main() {
   })
   bot.on('undecryptableMessage', (event) => {
     const kind = errorKind(event.error)
-    pending.set(event.info.id, kind)
-    write('undecryptable', { kind })
+    const chat = chatKind(bot, event.info.chat, event.info.fromMe)
+    pending.set(event.info.id, { kind, chat })
+    write('undecryptable', { kind, chat })
     noteFailure(event, kind)
   })
+  const settled = (event) => pending.get(event.id) || { kind: 'desconocido', chat: chatKind(bot, event.chat || '') }
   bot.on('messageRecovered', (event) => {
-    write('recovered', { kind: pending.get(event.id) || 'desconocido' })
+    write('recovered', settled(event))
     pending.delete(event.id)
     settleProbe(event.id)
   })
   bot.on('messageLost', (event) => {
-    write('lost', { kind: pending.get(event.id) || 'desconocido', waitedSecs: event.waitedSecs })
+    write('lost', { ...settled(event), waitedSecs: event.waitedSecs })
     pending.delete(event.id)
     settleProbe(event.id, true)
   })

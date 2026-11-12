@@ -38,7 +38,7 @@ impl SenderKeyState {
                 .skipped
                 .iter()
                 .position(|(i, _)| *i == iteration)
-                .ok_or_else(|| Error::signal("sender key for this iteration was already used"))?;
+                .ok_or_else(|| Error::signal(super::REPLAYED_SENDER_KEY))?;
             return Ok(self.skipped.remove(index).1);
         }
         if iteration - self.iteration > MAX_FORWARD_JUMP {

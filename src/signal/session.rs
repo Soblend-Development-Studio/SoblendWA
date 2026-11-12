@@ -299,7 +299,7 @@ impl SessionState {
             .find(|c| c.ratchet == their_ratchet)
             .ok_or_else(|| Error::signal("missing receiving chain"))?;
         chain.advance_to(i64::from(counter))?;
-        let secrets = chain.take_secrets(counter).ok_or_else(|| Error::signal("message key was already used"))?;
+        let secrets = chain.take_secrets(counter).ok_or_else(|| Error::signal(super::REPLAYED_MESSAGE))?;
 
         let expected = crypto::hmac_sha256(
             &secrets.mac,
@@ -367,6 +367,17 @@ impl SessionRecord {
 
     pub(crate) fn has_base_key(&self, base_key: &[u8; 32]) -> bool {
         self.current.iter().chain(&self.previous).any(|s| s.base_key == *base_key)
+    }
+
+    // A session carried over from the other address of the same device becomes the current one; whatever this
+    // record had stays behind it as previous sessions.
+    pub(crate) fn absorb(&mut self, moved: SessionRecord) {
+        let SessionRecord { current, previous } = moved;
+        self.previous.extend(previous);
+        if let Some(state) = current {
+            self.promote(state);
+        }
+        self.previous.truncate(MAX_PREVIOUS_SESSIONS);
     }
 
     pub(crate) fn promote(&mut self, state: SessionState) {

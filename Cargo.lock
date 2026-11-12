@@ -2904,7 +2904,7 @@ checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
 
 [[package]]
 name = "soblendwa"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -2947,7 +2947,7 @@ dependencies = [
 
 [[package]]
 name = "soblendwa-bridge"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2962,7 +2962,7 @@ dependencies = [
 
 [[package]]
 name = "soblendwa-node"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "mimalloc",
  "napi",
@@ -2975,7 +2975,7 @@ dependencies = [
 
 [[package]]
 name = "soblendwa-python"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "mimalloc",
  "pyo3",
@@ -2985,7 +2985,7 @@ dependencies = [
 
 [[package]]
 name = "soblendwa-server"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "axum",
  "clap",

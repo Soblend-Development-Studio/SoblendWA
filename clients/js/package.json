@@ -1,6 +1,6 @@
 {
   "name": "soblendwa-client",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "JavaScript/TypeScript client for soblendwa-server. Works in Node, Bun, Deno and browsers. By Soblend Development Studio.",
   "author": "Soblend Development Studio",
   "license": "MIT",

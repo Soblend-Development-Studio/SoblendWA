@@ -11,6 +11,15 @@ use tokio::sync::{Mutex, OwnedMappedMutexGuard, OwnedMutexGuard};
 
 pub use session::{EncType, PreKeyBundle};
 
+// Both mean the key for that exact message was spent already: it is a message we decrypted before, handed back
+// again (after a reconnect, usually). There is nothing to retry.
+pub(crate) const REPLAYED_MESSAGE: &str = "message key was already used";
+pub(crate) const REPLAYED_SENDER_KEY: &str = "sender key for this iteration was already used";
+
+pub(crate) fn is_replay(err: &Error) -> bool {
+    matches!(err, Error::Signal(text) if text == REPLAYED_MESSAGE || text == REPLAYED_SENDER_KEY)
+}
+
 use group::SenderKeyRecord;
 use session::{IncomingPreKey, SessionRecord, SessionState};
 
@@ -261,6 +270,43 @@ impl SignalRepository {
         }
     }
 
+    // A device that moved to its LID keeps encrypting with the session it built under its phone number (and the
+    // other way round), so its messages arrive under one address with the other address's session. When the
+    // session of `other` opens the message, it moves to `address` for good, as WhatsApp's own clients do.
+    pub(crate) async fn decrypt_moved(
+        &self,
+        address: &str,
+        other: &str,
+        kind: EncType,
+        data: &[u8],
+    ) -> Result<Vec<u8>> {
+        let (moved, plaintext) = {
+            let mut record = self.session(other).await?;
+            if !record.has_session() {
+                return Err(Error::signal("no session under the other address either"));
+            }
+            let mut attempt = record.clone();
+            let plaintext = match kind {
+                EncType::Message => attempt.decrypt(&self.identity, data)?,
+                EncType::PreKey => {
+                    let incoming = IncomingPreKey::parse(data)?;
+                    if !attempt.has_base_key(&incoming.base_key) {
+                        return Err(Error::signal("the other address has no session with that base key"));
+                    }
+                    let signed = self.signed_pre_key_for(incoming.signed_pre_key_id).await?;
+                    attempt.decrypt_pre_key(&self.identity, &signed, None, &incoming)?
+                }
+            };
+            *record = SessionRecord::default();
+            self.store.remove(KeyKind::Session, other).await?;
+            (attempt, plaintext)
+        };
+        let mut record = self.session(address).await?;
+        record.absorb(moved);
+        self.store.set(KeyKind::Session, address, record.to_bytes()).await?;
+        Ok(plaintext)
+    }
+
     async fn signed_pre_key_for(&self, id: Option<u32>) -> Result<KeyPair> {
         let (current_id, current) = self.signed_pre_key.read().clone();
         match id {
@@ -406,6 +452,51 @@ mod tests {
             let (_, back) = bob.repo.encrypt("alice.0", &text).await.unwrap();
             assert_eq!(alice.repo.decrypt("bob.0", EncType::Message, &back).await.unwrap(), text);
         }
+    }
+
+    #[tokio::test]
+    async fn session_under_the_other_address() {
+        let alice = peer().await;
+        let bob = peer().await;
+        let stranger = peer().await;
+        alice.repo.inject_bundle("bob.0", &bundle_for(&bob, 7).await).await.unwrap();
+        let (_, first) = alice.repo.encrypt("bob.0", b"por numero").await.unwrap();
+        assert_eq!(bob.repo.decrypt("alice.0", EncType::PreKey, &first).await.unwrap(), b"por numero");
+        let (_, back) = bob.repo.encrypt("alice.0", b"recibido").await.unwrap();
+        alice.repo.decrypt("bob.0", EncType::Message, &back).await.unwrap();
+
+        // bob also keeps an unrelated session under alice's LID
+        stranger.repo.inject_bundle("bob.0", &bundle_for(&bob, 8).await).await.unwrap();
+        let (_, other) = stranger.repo.encrypt("bob.0", b"otra").await.unwrap();
+        bob.repo.decrypt("alice_1.0", EncType::PreKey, &other).await.unwrap();
+
+        let (kind, by_lid) = alice.repo.encrypt("bob.0", b"ahora por LID").await.unwrap();
+        assert_eq!(kind, EncType::Message);
+        assert!(bob.repo.decrypt("alice_1.0", kind, &by_lid).await.is_err(), "the LID session is a different one");
+        let opened = bob.repo.decrypt_moved("alice_1.0", "alice.0", kind, &by_lid).await.unwrap();
+        assert_eq!(opened, b"ahora por LID");
+
+        let (_, next) = alice.repo.encrypt("bob.0", b"y otra").await.unwrap();
+        assert_eq!(bob.repo.decrypt("alice_1.0", EncType::Message, &next).await.unwrap(), b"y otra");
+        let (_, reply) = bob.repo.encrypt("alice_1.0", b"te leo").await.unwrap();
+        assert_eq!(alice.repo.decrypt("bob.0", EncType::Message, &reply).await.unwrap(), b"te leo");
+        assert_eq!(bob.repo.missing_sessions(&["alice.0".to_owned()]).await.unwrap().len(), 1, "it moved, not copied");
+    }
+
+    #[tokio::test]
+    async fn replay_is_recognised() {
+        let alice = peer().await;
+        let bob = peer().await;
+        alice.repo.inject_bundle("bob.0", &bundle_for(&bob, 9).await).await.unwrap();
+        let (_, first) = alice.repo.encrypt("bob.0", b"uno").await.unwrap();
+        bob.repo.decrypt("alice.0", EncType::PreKey, &first).await.unwrap();
+        let (_, back) = bob.repo.encrypt("alice.0", b"dos").await.unwrap();
+        alice.repo.decrypt("bob.0", EncType::Message, &back).await.unwrap();
+        let (_, again) = alice.repo.encrypt("bob.0", b"tres").await.unwrap();
+        bob.repo.decrypt("alice.0", EncType::Message, &again).await.unwrap();
+        let err = bob.repo.decrypt("alice.0", EncType::Message, &again).await.unwrap_err();
+        assert!(is_replay(&err), "{err}");
+        assert!(!is_replay(&Error::signal("bad message mac")));
     }
 
     #[tokio::test]

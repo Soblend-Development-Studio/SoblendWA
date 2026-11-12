@@ -70,6 +70,21 @@ fn error_kind(error: &str) -> &'static str {
     }
 }
 
+// Where a message that failed came from, without saying who: a group, statuses, the account's own devices, or
+// someone in private.
+fn chat_kind(client: &Client, chat: &Jid, from_me: bool) -> &'static str {
+    let own = [client.me(), client.lid()].into_iter().flatten().any(|jid| jid.user == chat.user);
+    if chat.is_group() {
+        "grupo"
+    } else if chat.is_status_broadcast() {
+        "estado"
+    } else if from_me || own {
+        "propio"
+    } else {
+        "privado"
+    }
+}
+
 fn is_private(chat: &Jid) -> bool {
     chat.is_pn() || chat.is_lid()
 }
@@ -481,7 +496,7 @@ async fn main() -> soblendwa::Result<()> {
     tokio::pin!(stop);
     let mut asked_code = false;
     let mut last_image: HashMap<Jid, MessageEvent> = HashMap::new();
-    let mut pending: HashMap<String, &'static str> = HashMap::new();
+    let mut pending: HashMap<String, (&'static str, &'static str)> = HashMap::new();
 
     loop {
         let event = tokio::select! {
@@ -547,16 +562,17 @@ async fn main() -> soblendwa::Result<()> {
             }
             Event::UndecryptableMessage { info, error } => {
                 let kind = error_kind(&error);
-                pending.insert(info.id, kind);
-                report.write("undecryptable", json!({ "kind": kind }));
+                let chat = chat_kind(&client, &info.chat, info.from_me);
+                pending.insert(info.id, (kind, chat));
+                report.write("undecryptable", json!({ "kind": kind, "chat": chat }));
             }
-            Event::MessageRecovered { id, .. } => {
-                let kind = pending.remove(&id).unwrap_or("desconocido");
-                report.write("recovered", json!({ "kind": kind }));
+            Event::MessageRecovered { id, chat, .. } => {
+                let (kind, chat) = pending.remove(&id).unwrap_or(("desconocido", chat_kind(&client, &chat, false)));
+                report.write("recovered", json!({ "kind": kind, "chat": chat }));
             }
-            Event::MessageLost { id, waited, .. } => {
-                let kind = pending.remove(&id).unwrap_or("desconocido");
-                report.write("lost", json!({ "kind": kind, "waitedSecs": waited.as_secs() }));
+            Event::MessageLost { id, chat, waited, .. } => {
+                let (kind, chat) = pending.remove(&id).unwrap_or(("desconocido", chat_kind(&client, &chat, false)));
+                report.write("lost", json!({ "kind": kind, "chat": chat, "waitedSecs": waited.as_secs() }));
             }
             Event::JoinedGroup { group, via, .. } => {
                 println!("entré al grupo {group} ({})", via.as_str());
