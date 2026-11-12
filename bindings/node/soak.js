@@ -203,8 +203,10 @@ function testTable(lines, detail = false) {
 function cutCause(reason) {
   const text = (typeof reason === 'string' ? reason : JSON.stringify(reason || {})).toLowerCase()
   if (text.includes('simulated outage')) return 'prueba'
-  if (text.includes('stream error') || text.includes('streamerror')) return 'stream:error'
+  if (text.includes('manual')) return 'reinicio'
+  if (text.includes('qrtimeout') || text.includes('restartrequired') || text.includes('restart required')) return 'vinculación'
   if (text.includes('503')) return '503'
+  if (text.includes('stream error') || text.includes('streamerror')) return 'stream:error'
   if (text.includes('reset') || text.includes('timed out') || text.includes('timeout') || text.includes('connectionlost') || text.includes('connection lost')) return 'red'
   return 'otra'
 }
