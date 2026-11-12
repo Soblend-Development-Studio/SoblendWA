@@ -4,6 +4,20 @@ Usamos [semver](https://semver.org/lang/es/). En 0.x, el número del medio puede
 arregla. Para no llevarte sorpresas fija la versión exacta que instalas, sin `^`: `"soblendwa-node": "X.Y.Z"`,
 `soblendwa = "=X.Y.Z"`, `soblendwa==X.Y.Z`. Una versión dice "sin publicar" hasta que sale; entonces lleva su fecha.
 
+## 0.2.1 (sin publicar)
+
+### Arreglado
+
+- Un dispositivo que pasó a su LID sigue cifrando con la sesión que armó bajo su número, o al revés, y esos mensajes
+  daban MAC mala y no volvían con el reintento. Ahora, si la sesión de la dirección por la que llega un mensaje no lo
+  abre, se prueba la del mismo dispositivo bajo su otra dirección, y si la abre, la sesión se muda ahí. Lo encontró
+  el testigo de la prueba larga, una cuenta recién vinculada: 14 de sus 15 mensajes perdidos con detalle venían de su
+  propio teléfono por esta causa.
+- Un mensaje ya descifrado que WhatsApp vuelve a entregar después de una reconexión daba "already used", se contaba
+  como sin descifrar y se pedía otra vez. Ahora cuenta como duplicado.
+- `soak.js` y `examples/soak.rs` anotan si cada mensaje que falló era de grupo, de estados, privado o del propio
+  teléfono, y la tabla por día ya no cuenta los `503` ni los reinicios a mano como `stream:error`.
+
 ## 0.2.0 (2026-11-11)
 
 ### Rompe

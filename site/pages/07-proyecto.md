@@ -156,7 +156,11 @@ El 11 de noviembre de 2026, de 17:38 a 17:50, con la cuenta de la prueba larga y
 
 En 4 de las 10 rondas de `kill -9` el proceso murió antes de aceptar ningún envío, mientras pedía los dispositivos del contacto nuevo, y ninguno de esos mensajes llegó. Es lo correcto: nadie había recibido un id. Preparando esta serie apareció un bug real: `send_*` devolvía el id antes de que el outbox estuviera escrito, porque los stores escriben hasta 50 ms después, así que un `kill -9` en ese hueco perdía un mensaje ya aceptado. Una prueba lo reproduce, y estaba arreglado antes de correr la serie.
 
-El testigo es una cuenta recién vinculada, y ahí apareció algo que la cuenta de la prueba larga no muestra. En sus primeras dos horas, 83 mensajes que le llegaron no se pudieron descifrar por MAC mala, y 73 no volvieron con el reintento. En la cuenta larga son 6 en dos días, sin contar las pruebas. Está en investigación. También se vio que un mensaje de grupo ya descifrado que WhatsApp vuelve a entregar después de un reinicio se cuenta como fallo, cuando es un duplicado.
+El testigo es una cuenta recién vinculada, y ahí apareció algo que la cuenta de la prueba larga no muestra. En sus primeras dos horas, 83 mensajes que le llegaron no se pudieron descifrar por MAC mala, y 73 no volvieron con el reintento. En la cuenta larga son 6 en dos días, sin contar las pruebas.
+
+La causa era que el testigo guardaba dos sesiones con un mismo dispositivo, una bajo su número y otra bajo su LID. Ese dispositivo cifraba con la del número y mandaba el mensaje desde su LID. SoblendWA solo probaba la del LID, salía MAC mala, y el reintento no servía porque el otro lado nunca reenviaba. De los 15 perdidos con detalle, 14 venían del propio teléfono de la cuenta. Los fallos no coincidían con las pruebas: estaban repartidos en dos horas, todos en chats privados, y las sesiones anteriores sí se probaban.
+
+Desde la 0.2.1, si la sesión de la dirección por la que llega un mensaje no lo abre, se prueba la del mismo dispositivo bajo su otra dirección, y si lo abre, la sesión se muda ahí. En los primeros 10 minutos con el arreglo eso pasó 2 veces, y no hubo ninguna MAC mala nueva. Además, un mensaje de grupo que ya se había descifrado y que WhatsApp vuelve a entregar después de un reinicio ahora cuenta como duplicado y no como fallo.
 
 ## Probado contra los servidores de WhatsApp, sin teléfono {ok}
 
