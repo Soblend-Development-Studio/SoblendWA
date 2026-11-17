@@ -1619,7 +1619,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("soblendwa-outbox-{}", crypto::random_u32()));
         let store = crate::FileStore::open(&dir).await.unwrap();
         store.save_creds(&fake.account(BOT)).await.unwrap();
-        let (bot, _bot_events) = fake.connect_with(fake.builder().store(store)).await.unwrap();
+        let (bot, _bot_events) = fake.connect_with(fake.builder().store(store).durable_sends(true)).await.unwrap();
         let (_ana, _ana_events) = fake.connect(ANA).await.unwrap();
 
         fake.hold_acks(BOT, true);
@@ -1628,6 +1628,70 @@ mod tests {
         let parked = disk.keys(KeyKind::Outbox).await.unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(parked.contains(&id), "send_text returned, so a kill -9 now must not lose it");
+    }
+
+    // A database 300 ms away. Every write waits that long; reads and creds do not.
+    #[derive(Default)]
+    struct FarStore {
+        creds: parking_lot::Mutex<Option<Creds>>,
+        rows: parking_lot::Mutex<std::collections::HashMap<(KeyKind, String), Vec<u8>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::store::Backend for FarStore {
+        async fn load_creds(&self) -> Result<Option<Creds>> {
+            Ok(self.creds.lock().clone())
+        }
+
+        async fn save_creds(&self, creds: &Creds) -> Result<()> {
+            *self.creds.lock() = Some(creds.clone());
+            Ok(())
+        }
+
+        async fn fetch(&self, kind: KeyKind, key: &str) -> Result<Option<Vec<u8>>> {
+            Ok(self.rows.lock().get(&(kind, key.to_owned())).cloned())
+        }
+
+        async fn apply(&self, writes: &[crate::store::KeyWrite]) -> Result<()> {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let mut rows = self.rows.lock();
+            for write in writes {
+                match write {
+                    crate::store::KeyWrite::Set(kind, key, value) => {
+                        rows.insert((*kind, key.clone()), value.clone());
+                    }
+                    crate::store::KeyWrite::Remove(kind, key) => {
+                        rows.remove(&(*kind, key.clone()));
+                    }
+                    crate::store::KeyWrite::Clear => rows.clear(),
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn far_store_does_not_hold_sends() {
+        let fake = FakeWhatsApp::start().await.unwrap();
+        let backend = FarStore::default();
+        *backend.creds.lock() = Some(fake.account(BOT));
+        let store: Arc<dyn Store> = Arc::new(crate::store::BatchedStore::new(backend));
+        let (bot, _bot_events) = fake.connect_with(fake.builder().store(store)).await.unwrap();
+        let (_ana, mut ana_events) = fake.connect(ANA).await.unwrap();
+        bot.send_text(&Jid::phone(ANA), "primero").await.unwrap();
+        next_text(&mut ana_events).await;
+
+        let started = std::time::Instant::now();
+        bot.send_text(&Jid::phone(ANA), "sin esperar a la base").await.unwrap();
+        let returned = started.elapsed();
+        let arrived = next_text(&mut ana_events).await;
+        assert_eq!(arrived.text(), Some("sin esperar a la base"));
+        assert!(returned < Duration::from_millis(150), "send_text waited for the store: {returned:?}");
+        assert!(
+            started.elapsed() < Duration::from_millis(250),
+            "the message waited for the store: {:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]

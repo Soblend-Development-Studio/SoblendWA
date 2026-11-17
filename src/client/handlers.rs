@@ -180,16 +180,20 @@ impl Client {
         if let Some(code) = error {
             tracing::warn!(%id, code, "whatsapp rejected an outgoing message");
         }
-        let (latency, timings) = {
+        // A resend after a retry receipt is acked again under the same id. Timing that ack from the first send
+        // made one message look like it took 30 s.
+        let first = self.inner.in_flight.remove(&id).is_some();
+        let (latency, timings) = if first {
             let sent = self.inner.sent.lock();
             let latency = sent.sent_at(&id).map(|at| at.elapsed());
             (latency, sent.timings(&id).map(|timings| super::SendTimings { server: latency, ..timings }))
+        } else {
+            (None, None)
         };
         if let (Some(timings), None) = (timings, error) {
             self.record_timings(timings);
         }
-        self.inner.in_flight.remove(&id);
-        if self.inner.config.outbox {
+        if first && self.inner.config.outbox {
             let (client, id) = (self.clone(), id.clone());
             tokio::spawn(async move { client.unpark(&id).await });
         }
@@ -627,5 +631,33 @@ impl Client {
         let creds = self.inner.creds.read();
         creds.me.as_ref().is_some_and(|me| me.same_user(jid))
             || creds.lid.as_ref().is_some_and(|lid| lid.same_user(jid))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use super::*;
+    use crate::store::MemoryStore;
+
+    #[tokio::test]
+    async fn repeated_ack_is_not_timed() {
+        let (client, _events) = Client::builder().store(Arc::new(MemoryStore::new())).build().await.unwrap();
+        let sent = super::super::SentMessage {
+            chat: Jid::phone("5215522222222"),
+            message: crate::proto::Message::default(),
+            sender_address: None,
+            sent_at: Instant::now(),
+            timings: super::super::SendTimings::default(),
+        };
+        client.remember_sent("A1", sent);
+        client.inner.in_flight.insert("A1".into());
+        let ack = Node::new("ack").attr("class", "message").attr("id", "A1");
+        client.on_ack(&ack);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        client.on_ack(&ack);
+        assert_eq!(client.stats().send_timings.samples, 1);
     }
 }

@@ -225,6 +225,7 @@ impl Client {
         let parks = !resend && self.outbox_enabled(&chat);
         if parks && !self.is_connected() && self.inner.running.load(std::sync::atomic::Ordering::Acquire) {
             self.park(&id, &chat, &message, options.edit).await;
+            self.persist_outbox(&id).await;
             tracing::debug!(%id, %chat, "offline: the message waits in the outbox until the session reconnects");
             return Ok(id);
         }
@@ -375,14 +376,22 @@ impl Client {
         };
         let sent_at = Instant::now();
         self.inner.in_flight.insert(id.clone());
-        if let Err(err) = self.send_node(&stanza) {
-            self.inner.in_flight.remove(&id);
-            if !self.outbox_enabled(&chat) {
-                return Err(err);
+        // The frame leaves before the store catches up: the outbox entry and the Signal state are already queued
+        // and get written meanwhile, instead of holding the message for a round trip to the database.
+        let on_wire = match self.send_node_written(&stanza) {
+            Ok(on_wire) => on_wire,
+            Err(err) => {
+                self.inner.in_flight.remove(&id);
+                if !self.outbox_enabled(&chat) {
+                    return Err(err);
+                }
+                if parks {
+                    self.persist_outbox(&id).await;
+                }
+                tracing::debug!(%err, %id, "the socket dropped; the message stays in the outbox for the reconnect");
+                return Ok(id);
             }
-            tracing::debug!(%err, %id, "the socket dropped; the message stays in the outbox for the reconnect");
-            return Ok(id);
-        }
+        };
         Counters::bump(&self.inner.counters.sent);
         if direct {
             self.issue_tc_token_later(chat.clone());
@@ -406,6 +415,10 @@ impl Client {
             self.keep_for_retries(&id, &chat, &message, sender_address.as_deref()).await;
         }
         self.remember_sent(&id, SentMessage { chat, message, sender_address, sent_at, timings });
+        let reached_socket = on_wire.await.is_ok();
+        if parks && (!reached_socket || self.inner.config.durable_sends) {
+            self.persist_outbox(&id).await;
+        }
         Ok(id)
     }
 

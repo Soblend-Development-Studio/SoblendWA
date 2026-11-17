@@ -176,6 +176,7 @@ pub struct Config {
     pub media_cache_ttl: Option<Duration>,
     pub send_limit: Option<SendLimit>,
     pub outbox: bool,
+    pub durable_sends: bool,
     pub trust_root: Option<[u8; 32]>,
     pub media_endpoint: Option<String>,
     pub link_previews: LinkPreviewConfig,
@@ -202,6 +203,7 @@ impl Default for Config {
             media_cache_ttl: Some(Duration::from_secs(7 * 24 * 60 * 60)),
             send_limit: Some(SendLimit::default()),
             outbox: true,
+            durable_sends: false,
             trust_root: None,
             media_endpoint: None,
             link_previews: LinkPreviewConfig::default(),
@@ -315,6 +317,13 @@ impl ClientBuilder {
 
     pub fn outbox(mut self, enabled: bool) -> Self {
         self.config.outbox = enabled;
+        self
+    }
+
+    // send_* comes back once the message is in the socket. With this it also waits until the outbox and the
+    // Signal state are in the store, which costs one or two round trips to a remote database per send.
+    pub fn durable_sends(mut self, wait: bool) -> Self {
+        self.config.durable_sends = wait;
         self
     }
 
@@ -465,8 +474,13 @@ impl Outcome {
 }
 
 pub(crate) struct Link {
-    outbound: mpsc::UnboundedSender<Vec<u8>>,
+    outbound: mpsc::UnboundedSender<Outbound>,
     close: mpsc::UnboundedSender<Outcome>,
+}
+
+pub(crate) struct Outbound {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) written: Option<oneshot::Sender<()>>,
 }
 
 #[derive(Clone)]
@@ -886,10 +900,22 @@ impl Client {
     }
 
     pub fn send_node(&self, node: &Node) -> Result<()> {
+        self.push_frame(node, None)
+    }
+
+    // Resolves once the frame is in the socket. From there a kill -9 no longer loses it: the kernel still sends
+    // what it was given.
+    pub(crate) fn send_node_written(&self, node: &Node) -> Result<oneshot::Receiver<()>> {
+        let (written, on_wire) = oneshot::channel();
+        self.push_frame(node, Some(written))?;
+        Ok(on_wire)
+    }
+
+    fn push_frame(&self, node: &Node, written: Option<oneshot::Sender<()>>) -> Result<()> {
         let bytes = binary::encode(node);
         let link = self.inner.link.lock();
         let link = link.as_ref().ok_or(Error::NotConnected)?;
-        link.outbound.send(bytes).map_err(|_| Error::NotConnected)
+        link.outbound.send(Outbound { bytes, written }).map_err(|_| Error::NotConnected)
     }
 
     pub async fn query(&self, mut node: Node) -> Result<Node> {

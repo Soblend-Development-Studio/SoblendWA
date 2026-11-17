@@ -136,6 +136,7 @@ pub struct Options {
     pub retry_deadline_secs: Option<u64>,
     pub send_limit: Option<SendLimitOptions>,
     pub outbox: Option<bool>,
+    pub durable_sends: Option<bool>,
     pub workers: Option<usize>,
     pub query_timeout_secs: Option<f64>,
     pub connect_timeout_secs: Option<f64>,
@@ -739,6 +740,9 @@ impl Session {
         if let Some(enabled) = options.outbox {
             builder = builder.outbox(enabled);
         }
+        if let Some(wait) = options.durable_sends {
+            builder = builder.durable_sends(wait);
+        }
         if let Some(workers) = options.workers {
             builder = builder.workers(workers);
         }
@@ -1322,6 +1326,7 @@ mod tests {
             ("media_cache_ttl", json!({ "mediaCache": { "ttlSecs": 3600 } })),
             ("send_limit", json!({ "sendLimit": false })),
             ("outbox", json!({ "outbox": false })),
+            ("durable_sends", json!({ "durableSends": true })),
             ("trust_root", json!({ "server": { "noiseRootHex": "00" } })),
             ("media_endpoint", json!({ "server": { "mediaEndpoint": "http://127.0.0.1:1" } })),
             ("link_previews", json!({ "linkPreviews": { "enabled": false } })),

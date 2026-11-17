@@ -164,6 +164,8 @@ export interface ClientOptions {
   retryDeadlineSecs?: number
   sendLimit?: boolean | SendLimitOptions
   outbox?: boolean
+  /** Also wait until the outbox and the Signal state are in the store before send* resolves. */
+  durableSends?: boolean
   workers?: number
   version?: string | [number, number, number]
   queryTimeoutSecs?: number

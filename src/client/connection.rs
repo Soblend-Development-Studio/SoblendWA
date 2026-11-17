@@ -138,7 +138,7 @@ impl Client {
         let Opened { mut sink, mut stream, mut writer, mut reader, mut decoder } = opened;
 
         let generation = self.inner.generation.fetch_add(1, Ordering::AcqRel) + 1;
-        let (outbound, mut outbound_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (outbound, mut outbound_rx) = mpsc::unbounded_channel::<super::Outbound>();
         let (close, mut close_rx) = mpsc::unbounded_channel::<Outcome>();
         *self.inner.link.lock() = Some(Link { outbound, close: close.clone() });
 
@@ -150,7 +150,9 @@ impl Client {
                 while let Ok(next) = outbound_rx.try_recv() {
                     batch.push(next);
                 }
-                for plaintext in batch {
+                let mut written = Vec::new();
+                for super::Outbound { bytes: plaintext, written: done } in batch {
+                    written.extend(done);
                     let sealed = match writer.encrypt(&plaintext).and_then(|c| noise::frame(None, &c)) {
                         Ok(sealed) => sealed,
                         Err(err) => {
@@ -166,6 +168,9 @@ impl Client {
                 if let Err(err) = sink.flush().await {
                     let _ = writer_close.send(Outcome::Lost(err.to_string()));
                     return;
+                }
+                for done in written {
+                    let _ = done.send(());
                 }
             }
             let _ = sink.close().await;
