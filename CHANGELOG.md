@@ -6,8 +6,18 @@ arregla. Para no llevarte sorpresas fija la versión exacta que instalas, sin `^
 
 ## 0.2.1 (sin publicar)
 
+### Más rápido
+
+- Un envío ya no espera al store. Antes `send_*` guardaba el outbox, esperaba a que la base lo escribiera y recién
+  ahí mandaba el mensaje: con un store remoto, una o dos idas y vueltas a la base antes de que el mensaje saliera, y
+  otra vez antes de devolver el id. Ahora el mensaje sale primero, el store escribe al mismo tiempo, y `send_*` vuelve
+  cuando el mensaje ya está en el socket, donde un `kill -9` tampoco lo pierde. Con una base a 300 ms, `send_text`
+  pasó de 618 ms a volver enseguida. `durableSends: true` (`.durable_sends(true)`) vuelve a esperar al store.
+
 ### Arreglado
 
+- El ack que WhatsApp repite cuando un mensaje se reenvía por un reintento se medía desde el primer envío, y un mensaje
+  aparecía en `sendTimings` y en `serverAck.latency` como si hubiera tardado 30 s. Ahora solo cuenta el primero.
 - Un dispositivo que pasó a su LID sigue cifrando con la sesión que armó bajo su número, o al revés, y esos mensajes
   daban MAC mala y no volvían con el reintento. Ahora, si la sesión de la dirección por la que llega un mensaje no lo
   abre, se prueba la del mismo dispositivo bajo su otra dirección, y si la abre, la sesión se muda ahí. Lo encontró

@@ -243,6 +243,7 @@ lead: Configura el cliente antes de crearlo. Los valores por defecto están en [
 @fn ClientBuilder media_cache :: Cuánto se recuerda la multimedia. Con `None`, se desactiva.
 @fn ClientBuilder send_limit :: El [límite de envíos](#confiabilidad-limite). Con `None`, se desactiva.
 @fn ClientBuilder outbox :: El [outbox persistente](#confiabilidad-outbox).
+@fn ClientBuilder durable_sends :: Que `send_*` espere también a que el store tenga escrito el outbox. Por defecto vuelve cuando el mensaje está en el socket ([más](#confiabilidad-outbox)).
 @fn ClientBuilder link_previews :: La [vista previa de enlaces](#vista-previa).
 @fn ClientBuilder proxy :: El [proxy](#proxy).
 @fn ClientBuilder workers :: Cuántos mensajes se procesan en paralelo.
@@ -677,7 +678,7 @@ lead: Los tipos públicos que devuelven y reciben los métodos, y sus campos.
 
 | Tipo | Campos o valores |
 |---|---|
-| `Config` | `device_name`, `platform`, `version`, `push_name`, `country_code`, `online_on_connect`, `auto_reconnect`, `connect_timeout`, `query_timeout`, `keepalive_interval`, `workers`, `ws_url`, `proxy`, `media_cache_ttl`, `send_limit`, `outbox`, `trust_root`, `media_endpoint`, `link_previews` |
+| `Config` | `device_name`, `platform`, `version`, `push_name`, `country_code`, `online_on_connect`, `auto_reconnect`, `connect_timeout`, `query_timeout`, `keepalive_interval`, `workers`, `ws_url`, `proxy`, `media_cache_ttl`, `send_limit`, `outbox`, `durable_sends`, `trust_root`, `media_endpoint`, `link_previews` |
 | `Platform` | `Chrome`, `Firefox`, `Safari`, `Edge`, `Opera`, `Desktop` |
 | `SendLimit` | `per_minute`, `burst`, `per_chat_per_minute`, `per_chat_burst` |
 | `SendTimings` | `queued`, `upload`, `prepare`, `encrypt`, `server` |

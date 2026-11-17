@@ -89,6 +89,10 @@ Cada mensaje se guarda en un outbox hasta que WhatsApp confirma que lo recibió.
 - `stats().outbox_resent` cuenta los reenvíos.
 - `.outbox(false)` lo desactiva.
 
+`send_*` vuelve cuando el mensaje ya está en el socket. Desde ahí un `kill -9` no lo pierde, porque el sistema operativo igual manda lo que ya recibió. La entrada del outbox y el estado de Signal se escriben en el store al mismo tiempo, sin frenar el mensaje. Si no hay conexión, el mensaje solo existe en el outbox, y entonces `send_*` espera a que el store lo tenga escrito.
+
+Con `durableSends: true` (`.durable_sends(true)` en Rust), `send_*` además espera a que el store termine de escribir. Con una base en la misma máquina eso cuesta 1 o 2 ms. Con una remota cuesta una o dos idas y vueltas a la base por envío, aunque el mensaje sale igual sin esperar.
+
 :::note Si tu bot usa otra librería al otro lado
 Un reenvío lleva el mismo id. SoblendWA descarta los duplicados al recibir, y los bots hechos con otras librerías deben hacer lo mismo.
 :::
@@ -352,6 +356,19 @@ La primera versión de esta sección decía "unos 650 ms de ida y vuelta". Con 4
 ```bash Terminal
 node tests/zapo/versus.cjs --via usuario@tu-vps --key ~/.ssh/tu-llave --runs 3
 ```
+
+### El ping depende de la cuenta {#rendimiento-ping}
+
+`client.ping()` manda un `iq` a WhatsApp y espera la respuesta, igual que el keepalive de zapo. Esa respuesta no la da el servidor más cercano, sino el servidor de chat donde vive tu cuenta, que puede estar mucho más lejos que la red.
+
+Medido el 17 de noviembre de 2026 en un VPS, con `tcpdump` sobre el socket de cada bot. Las dos cuentas usaban la misma versión de SoblendWA y llegaban al mismo servidor de WhatsApp, a 7 ms:
+
+| Cuenta | Red hasta WhatsApp | Respuesta del ping en el cable | `ping()` en el bot |
+|---|---|---|---|
+| Número de Colombia | 7 ms | 71,7 ms | 72 ms |
+| Número de Canadá | 7 ms | 27 ms | 27 ms |
+
+SoblendWA suma menos de 1 ms a lo que tarda WhatsApp. La diferencia entre cuentas la pone el orden de servidores que WhatsApp le da a cada una al conectar (la *routing info*): la cuenta de Colombia tenía de primero un servidor a unos 64 ms de ese VPS, y la de Canadá uno a unos 20 ms. Por eso, para comparar el ping de dos librerías, tienen que usar la misma cuenta desde la misma máquina. Con cuentas distintas comparas los servidores de WhatsApp.
 
 ## Un bot de eco, sin red
 
@@ -658,6 +675,7 @@ Todas las opciones de Rust existen en los demás lenguajes. Se pasan a `SoblendW
 | `retryDeadlineSecs` | `retry_deadline_secs` | `retry_deadline` |
 | `sendLimit` | `send_limit` | `send_limit` |
 | `outbox` | `outbox` | `outbox` |
+| `durableSends` | `durable_sends` | `durable_sends` |
 | `mediaCache: false` o `{ ttlSecs }` | `media_cache=...` | `media_cache` |
 | `workers` | `workers` | `workers` |
 | `queryTimeoutSecs` | `query_timeout_secs` | `query_timeout` |
